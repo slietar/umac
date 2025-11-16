@@ -108,21 +108,21 @@ fn pdf(comptime key_len: comptime_int, key: *const [key_len]u8, nonce: []const u
 // Output:
 //   Y, string of length 8 bytes.
 fn nh(k: *const [L1_KEY_LEN]u8, m: []const u8) u64 {
-    const t = @divExact(m.len, 4);
+    const chunk_count = @divExact(m.len, 4);
     var y: u64 = 0;
 
     var chunk_index: usize = 0;
 
-    while (chunk_index < t) : (chunk_index += 8) {
+    while (chunk_index < chunk_count) : (chunk_index += 8) {
         for (0..4) |sub_index| {
             const first_index = (chunk_index + sub_index) * 4;
             const second_index = first_index + 4 * 4;
 
             const m_i = std.mem.readInt(u32, m[first_index..][0..4], .little);
-            const k_i = std.mem.readInt(u32, k[first_index..][0..4], .little);
+            const k_i = std.mem.readInt(u32, k[first_index..][0..4], .big);
 
             const m_i2 = std.mem.readInt(u32, m[second_index..][0..4], .little);
-            const k_i2 = std.mem.readInt(u32, k[second_index..][0..4], .little);
+            const k_i2 = std.mem.readInt(u32, k[second_index..][0..4], .big);
 
             y +%= @as(u64, m_i +% k_i) *% @as(u64, m_i2 +% k_i2);
         }
@@ -145,7 +145,7 @@ fn nh(k: *const [L1_KEY_LEN]u8, m: []const u8) u64 {
 //     var out = [_]u8{0} ** 8;
 //     fastcrypto.nh_aux(&k, &m, &out, m.len);
 
-//     const outInt = std.mem.readInt(u64, &out, .little);
+//     const outInt = std.mem.readInt(u64, &out, .big);
 
 //     try std.testing.expect(outInt == x);
 // }
@@ -166,7 +166,7 @@ fn l1(k: *const [L1_KEY_LEN]u8, m: []const u8, output: [*]u8) void {
             u64,
             output[(chunk_index * 8)..][0..8],
             nh(k, m[(chunk_index * L1_KEY_LEN)..@min((chunk_index + 1) * L1_KEY_LEN, m.len)]) +% (L1_KEY_LEN << 3),
-            .little, // TODO: May need to swap endianess
+            .big,
         );
     }
 }
@@ -186,8 +186,8 @@ fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
     var y: u64 = 0;
 
     for (0..8) |i| {
-        const m_i = std.mem.readInt(u16, m[(i * 2)..][0..2], .little);
-        const k_i = @mod(std.mem.readInt(u64, k1[(i * 8)..][0..8], .little), PRIME_36);
+        const m_i = std.mem.readInt(u16, m[(i * 2)..][0..2], .big);
+        const k_i = @mod(std.mem.readInt(u64, k1[(i * 8)..][0..8], .big), PRIME_36);
 
         y += m_i * k_i;
     }
@@ -219,6 +219,12 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
     kdf(key_len, key, 3, l3_key1[0..(iter_count * 64)]);
     kdf(key_len, key, 4, l3_key2[0..(iter_count * 4)]);
 
+    // std.debug.print("{any}\n", .{l3_key1[0..(iter_count * 64)]});
+
+    // std.debug.print("{any}\n", .{L1_KEY_LEN + (iter_count - 1) * 16});
+    // std.debug.print("{s}\n", .{std.fmt.bytesToHex(&l1_key, .lower)[0..((L1_KEY_LEN + (iter_count - 1) * 16) * 2)]});
+    // std.debug.print("{s}\n", .{std.fmt.bytesToHex(&l2_key, .lower)[0..(iter_count * 24 * 2)]});
+
     for (0..iter_count) |iter_index| {
         const l1_output_size = (std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable) * 8;
         const l1_output = std.heap.page_allocator.alloc(u8, l1_output_size) catch unreachable;
@@ -229,6 +235,10 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
             m,
             l1_output.ptr,
         );
+
+        // std.debug.print("{any}\n", .{m});
+        // std.debug.print("{any}\n", .{l1_output});
+        _ = 1 + 2;
 
         var l2_output: [16]u8 = undefined;
         @memset(l2_output[0..8], 0);
@@ -244,7 +254,7 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
             u32,
             output[(iter_index * 4)..][0..4],
             iter_result,
-            .little,
+            .big,
         );
     }
 }
@@ -255,7 +265,8 @@ pub fn main() !void {
 
     var key: [KEY_LEN]u8 = undefined;
     var message: [1024]u8 = undefined;
-    var result: [4]u8 = undefined; // tag_len = 16
+    var result_self: [4]u8 = undefined; // tag_len = 16
+    var result_ref: [4]u8 = undefined; // tag_len = 16
 
     std.Random.bytes(rand.random(), &key);
     std.Random.bytes(rand.random(), &message);
@@ -263,20 +274,25 @@ pub fn main() !void {
 
     // Self
 
-    @memset(&result, 0);
-    uhash(KEY_LEN, &key, &message, &result);
+    @memset(&result_self, 0);
+    uhash(KEY_LEN, &key, &message, &result_self);
 
-    std.debug.print("Self {any}\n", .{result});
+    std.debug.print("----", .{});
 
 
     // Reference
 
-    @memset(&result, 0);
+    @memset(&result_ref, 0);
 
     const ctx = fastcrypto.uhash_alloc(&key);
-    const status = fastcrypto.uhash(ctx, &message, message.len, &result);
+    _ = fastcrypto.uhash(ctx, &message, message.len, &result_ref);
+    defer _ = fastcrypto.uhash_free(ctx);
 
-    _ = status;
 
-    std.debug.print("Ref  {any}\n", .{result});
+    std.debug.print("\n\nSelf {any}\n", .{result_self});
+    std.debug.print("Ref  {any}\n", .{result_ref});
+
+
+    // const k = "abcdefghijklmnop";
+    // const nonce = "bcdefghi";
 }
