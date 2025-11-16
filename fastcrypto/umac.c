@@ -50,7 +50,7 @@
 /* --- User Switches ---------------------------------------------------- */
 /* ---------------------------------------------------------------------- */
 
-#define UMAC_OUTPUT_LEN       16  /* Alowable: 4, 8, 12, 16              */
+#define UMAC_OUTPUT_LEN       4  /* Alowable: 4, 8, 12, 16              */
 #define FORCE_C_ONLY          1  /* ANSI C and 64-bit integers req'd     */
 #define GLADMAN_AES           0  /* Change to 1 to use Gladman's AES     */
 #define SSE2                  0  /* Is SSE2 is available?                */

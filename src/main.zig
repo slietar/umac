@@ -209,15 +209,15 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
     const iter_count = @divExact(tag_len, 4);
     const max_iter_count: comptime_int = @divExact(16, 4);
 
-    var l1_key: [1024 + (max_iter_count - 1) * 16]u8 = undefined;
+    var l1_key: [L1_KEY_LEN + (max_iter_count - 1) * 16]u8 = undefined;
     var l2_key: [max_iter_count * 24]u8 = undefined;
     var l3_key1: [max_iter_count * 64]u8 = undefined;
     var l3_key2: [max_iter_count * 4]u8 = undefined;
 
-    kdf(key_len, key, 0, l1_key[0..(1024 + (iter_count - 1) * 16)]);
-    kdf(key_len, key, 1, l2_key[0..(iter_count * 24)]);
-    kdf(key_len, key, 2, l3_key1[0..(iter_count * 64)]);
-    kdf(key_len, key, 3, l3_key2[0..(iter_count * 4)]);
+    kdf(key_len, key, 1, l1_key[0..(L1_KEY_LEN + (iter_count - 1) * 16)]);
+    kdf(key_len, key, 2, l2_key[0..(iter_count * 24)]);
+    kdf(key_len, key, 3, l3_key1[0..(iter_count * 64)]);
+    kdf(key_len, key, 4, l3_key2[0..(iter_count * 4)]);
 
     for (0..iter_count) |iter_index| {
         const l1_output_size = (std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable) * 8;
@@ -231,8 +231,8 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
         );
 
         var l2_output: [16]u8 = undefined;
-        @memcpy(l2_output[0..8], &std.mem.zeroes([8]u8));
-        @memcpy(l2_output[8..16], l1_output[0..8]);
+        @memset(l2_output[0..8], 0);
+        @memcpy(l2_output[8..16], l1_output);
 
         const iter_result = l3(
             l3_key1[(iter_index * 64)..][0..64],
@@ -255,28 +255,28 @@ pub fn main() !void {
 
     var key: [KEY_LEN]u8 = undefined;
     var message: [1024]u8 = undefined;
-    // var result: [16]u8 = undefined; // tag_len = 16
+    var result: [4]u8 = undefined; // tag_len = 16
 
     std.Random.bytes(rand.random(), &key);
     std.Random.bytes(rand.random(), &message);
 
 
-    // // Self
+    // Self
 
-    // @memset(&result, 0);
-    // uhash(KEY_LEN, &key, &message, &result);
+    @memset(&result, 0);
+    uhash(KEY_LEN, &key, &message, &result);
 
-    // std.debug.print("Self {any}\n", .{result});
+    std.debug.print("Self {any}\n", .{result});
 
 
-    // // Reference
+    // Reference
 
-    // @memset(&result, 0);
+    @memset(&result, 0);
 
-    // const ctx = fastcrypto.uhash_alloc(&key);
-    // const status = fastcrypto.uhash(ctx, &message, message.len, &result);
+    const ctx = fastcrypto.uhash_alloc(&key);
+    const status = fastcrypto.uhash(ctx, &message, message.len, &result);
 
-    // _ = status;
+    _ = status;
 
-    // std.debug.print("Ref  {any}\n", .{result});
+    std.debug.print("Ref  {any}\n", .{result});
 }
