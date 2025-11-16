@@ -157,15 +157,32 @@ fn nh(k: *const [L1_KEY_LEN]u8, m: []const u8) u64 {
 // Output:
 //   Y, string of length (8 * ceil(bytelength(M)/L1_KEY_LEN)) bytes.
 //
-// TODO: Do not assume that m.len is multiple of L1_PAD_BOUNDARY
 fn l1(k: *const [L1_KEY_LEN]u8, m: []const u8, output: [*]u8) void {
     const chunk_count = @max(std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable, 1);
 
     for (0..chunk_count) |chunk_index| {
+        const start_index = chunk_index * L1_KEY_LEN;
+        const end_index = @min(start_index + L1_KEY_LEN, m.len);
+        const chunk_size = end_index - start_index;
+
+        var padded_chunk: []const u8 = undefined;
+
+        if (chunk_size % L1_PAD_BOUNDARY != 0) {
+            const padded_chunk_size = (std.math.divCeil(usize, chunk_size, L1_PAD_BOUNDARY) catch unreachable) * L1_PAD_BOUNDARY;
+            var padded_chunk_buffer: [L1_KEY_LEN]u8 = undefined;
+
+            @memcpy(padded_chunk_buffer[0..chunk_size], m[start_index..end_index]);
+            @memset(padded_chunk_buffer[chunk_size..padded_chunk_size], 0);
+
+            padded_chunk = padded_chunk_buffer[0..padded_chunk_size];
+        } else {
+            padded_chunk = m[start_index..end_index];
+        }
+
         std.mem.writeInt(
             u64,
             output[(chunk_index * 8)..][0..8],
-            nh(k, m[(chunk_index * L1_KEY_LEN)..@min((chunk_index + 1) * L1_KEY_LEN, m.len)]) +% (L1_KEY_LEN << 3),
+            nh(k, padded_chunk) +% (chunk_size << 3),
             .big,
         );
     }
@@ -238,7 +255,6 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
 
         // std.debug.print("{any}\n", .{m});
         // std.debug.print("{any}\n", .{l1_output});
-        _ = 1 + 2;
 
         var l2_output: [16]u8 = undefined;
         @memset(l2_output[0..8], 0);
@@ -264,7 +280,7 @@ pub fn main() !void {
     var rand = std.Random.DefaultPrng.init(0);
 
     var key: [KEY_LEN]u8 = undefined;
-    var message: [1024]u8 = undefined;
+    var message: [59]u8 align(8) = undefined;
     var result_self: [4]u8 = undefined; // tag_len = 16
     var result_ref: [4]u8 = undefined; // tag_len = 16
 
