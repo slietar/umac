@@ -12,6 +12,9 @@ const openssl = @cImport({
 const BLOCK_LEN = 16;
 const KEY_LEN = 16; // 16, 24 or 32
 
+const L1_PAD_BOUNDARY = 32;
+const L1_KEY_LEN = 1024;
+
 
 fn aesEncrypt(comptime key_len: comptime_int, key: *const [key_len]u8, input: *const [BLOCK_LEN]u8) [BLOCK_LEN]u8 {
     var output: [BLOCK_LEN]u8 = undefined;
@@ -71,7 +74,7 @@ fn pdf(comptime key_len: comptime_int, key: *const [key_len]u8, nonce: []const u
 }
 
 
-fn nh(k: *const [1024]u8, m: []const u8) u64 {
+fn nh(k: *const [L1_KEY_LEN]u8, m: []const u8) u64 {
     const t = @divExact(m.len, 4);
     var y: u64 = 0;
 
@@ -115,6 +118,40 @@ test "nh" {
 }
 
 
+// TODO: Do not assume that m.len is multiple of L1_PAD_BOUNDARY
+fn l1(k: *const [L1_KEY_LEN]u8, m: []const u8, output: [*]u8) void {
+    const chunk_count = @max(std.math.divCeil(u32, m.len, L1_KEY_LEN), 1);
+
+    for (0..chunk_count) |chunk_index| {
+        std.mem.writeInt(
+            u64,
+            output[(chunk_index * 8)..][0..8],
+            nh(&k, m[(chunk_index * L1_KEY_LEN)..@min((chunk_index + 1) * L1_KEY_LEN, m.len)]) +% (L1_KEY_LEN << 3),
+            .little, // TODO: May need to swap endianess
+        );
+    }
+}
+
+
+const PRIME_36: u64 = (1 << 36) - 5;
+const PRIME_64: u64 = (1 << 64) - 59;
+const PRIME_128: u128 = (1 << 128) - 159;
+
+fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
+    var y: u64 = 0;
+
+    for (0..8) |i| {
+        const m_i = std.mem.readInt(u16, m[(i * 2)..][0..2], .little);
+        const k_i = @mod(std.mem.readInt(u32, k1[(i * 8)..][0..8], .little), PRIME_36);
+
+        y += m_i * k_i;
+    }
+
+    const z: u32 = @truncate(@mod(y, PRIME_36));
+    return z ^ k2;
+}
+
+
 pub fn main() !void {
     // var rand = std.Random.DefaultPrng.init(0);
 
@@ -131,4 +168,6 @@ pub fn main() !void {
     // fastcrypto.nh_aux(&k, &m, &out, m.len);
     // std.debug.print("Ref  {d}\n", .{std.mem.readInt(u64, &out, .big)});
     // std.debug.print("Ref  {d}\n", .{std.mem.readInt(u64, &out, .little)});
+
+    std.debug.print("Hello, World {d}!\n", .{PRIME_36});
 }
