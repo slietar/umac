@@ -1,5 +1,9 @@
 const std = @import("std");
 
+const fastcrypto = @cImport({
+    @cInclude("umac.c");
+});
+
 const openssl = @cImport({
     @cInclude("openssl/aes.h");
 });
@@ -68,7 +72,6 @@ fn pdf(comptime key_len: comptime_int, key: *const [key_len]u8, nonce: []const u
 
 
 fn nh(k: *const [1024]u8, m: []const u8) u64 {
-    // const t = std.math.divExact(usize, m.len, 4) catch unreachable;
     const t = @divExact(m.len, 4);
     var y: u64 = 0;
 
@@ -77,16 +80,13 @@ fn nh(k: *const [1024]u8, m: []const u8) u64 {
     while (chunk_index < t) : (chunk_index += 8) {
         for (0..4) |sub_index| {
             const first_index = (chunk_index + sub_index) * 4;
-            const second_index = first_index + 4;
+            const second_index = first_index + 4 * 4;
 
-            // std.debug.print("chunk_index: {d}, sub_index: {d}\n", .{chunk_index, t});
-            // std.debug.print("first_index: {d}, second_index: {d}\n", .{first_index, second_index});
+            const m_i = std.mem.readInt(u32, m[first_index..][0..4], .little);
+            const k_i = std.mem.readInt(u32, k[first_index..][0..4], .little);
 
-            const m_i = std.mem.readInt(u32, m[first_index..][0..4], .big);
-            const k_i = std.mem.readInt(u32, k[first_index..][0..4], .big);
-
-            const m_i2 = std.mem.readInt(u32, m[second_index..][0..4], .big);
-            const k_i2 = std.mem.readInt(u32, k[second_index..][0..4], .big);
+            const m_i2 = std.mem.readInt(u32, m[second_index..][0..4], .little);
+            const k_i2 = std.mem.readInt(u32, k[second_index..][0..4], .little);
 
             y +%= @as(u64, m_i +% k_i) *% @as(u64, m_i2 +% k_i2);
         }
@@ -95,16 +95,40 @@ fn nh(k: *const [1024]u8, m: []const u8) u64 {
     return y;
 }
 
-
-pub fn main() !void {
+test "nh" {
     var rand = std.Random.DefaultPrng.init(0);
 
     var k: [1024]u8 = undefined;
     std.Random.bytes(rand.random(), &k);
 
-    var m: [128]u8 = undefined;
+    var m: [32 * 5]u8 = undefined;
     std.Random.bytes(rand.random(), &m);
 
     const x = nh(&k, &m);
-    std.debug.print("NH output: {d}\n", .{x});
+
+    var out = [_]u8{0} ** 8;
+    fastcrypto.nh_aux(&k, &m, &out, m.len);
+
+    const outInt = std.mem.readInt(u64, &out, .little);
+
+    try std.testing.expect(outInt == x);
+}
+
+
+pub fn main() !void {
+    // var rand = std.Random.DefaultPrng.init(0);
+
+    // var k: [1024]u8 = undefined;
+    // std.Random.bytes(rand.random(), &k);
+
+    // var m: [32]u8 = undefined;
+    // std.Random.bytes(rand.random(), &m);
+
+    // const x = nh(&k, &m);
+    // std.debug.print("Self {d}\n", .{x});
+
+    // var out = [_]u8{0} ** 8;
+    // fastcrypto.nh_aux(&k, &m, &out, m.len);
+    // std.debug.print("Ref  {d}\n", .{std.mem.readInt(u64, &out, .big)});
+    // std.debug.print("Ref  {d}\n", .{std.mem.readInt(u64, &out, .little)});
 }

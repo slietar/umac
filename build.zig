@@ -85,6 +85,19 @@ pub fn build(b: *std.Build) void {
     exeMod.addLibraryPath(.{ .cwd_relative = "/opt/homebrew/Cellar/openssl@3/3.6.0/lib" });
     exeMod.linkSystemLibrary("openssl", .{});
 
+    // const source_files = &[_][]const u8{
+    //     b.path("fastcrypto/umac.c")
+    // };
+
+    exeMod.addCSourceFiles(.{
+        .files = &[_][]const u8{
+            // "fastcrypto/umac.c",
+            "fastcrypto/rijndael-alg-fst.c",
+        },
+    });
+
+    exeMod.addIncludePath(b.path("fastcrypto"));
+
     const exe = b.addExecutable(.{
         .name = "umac",
         .root_module = exeMod,
