@@ -1,6 +1,19 @@
 const std = @import("std");
 
+const TAG_LEN = 12;
+
+const TAG_LEN_STR: []const u8 = blk: {
+    const string = std.fmt.digits2(TAG_LEN);
+
+    if (TAG_LEN < 10) {
+        break :blk string[1..2];
+    } else {
+        break :blk &string;
+    }
+};
+
 const fastcrypto = @cImport({
+    @cDefine("UMAC_OUTPUT_LEN", TAG_LEN_STR);
     @cInclude("umac.c");
 });
 
@@ -201,9 +214,108 @@ fn l1(k: *const [L1_KEY_LEN]u8, m: []const u8, output: [*]u8) void {
 }
 
 
+const OFFSET_64 = 59;
+const OFFSET_128 = 159;
+
 const PRIME_36: u64 = (1 << 36) - 5;
-const PRIME_64: u64 = (1 << 64) - 59;
-const PRIME_128: u128 = (1 << 128) - 159;
+const PRIME_64: u64 = (1 << 64) - OFFSET_64;
+const PRIME_128: u128 = (1 << 128) - OFFSET_128;
+
+
+// Input:
+//   wordbits, the integer 64 or 128.
+//   maxwordrange, positive integer less than 2^wordbits.
+//   k, integer in the range 0 ... prime(wordbits) - 1.
+//   M, string with length divisible by (wordbits / 8) bytes.
+// Output:
+//   y, integer in the range 0 ... prime(wordbits) - 1.
+fn poly(comptime word_type: anytype, max_word_range: word_type, k: word_type, m: []const u8) word_type {
+    const offset = if (word_type == u64) OFFSET_64 else OFFSET_128;
+    const prime: word_type = if (word_type == u64) PRIME_64 else PRIME_128;
+    const marker = prime - 1;
+
+    const word_size = @sizeOf(word_type);
+    const double_word_type = if (word_type == u64) u128 else u256;
+
+    var y: word_type = 1;
+
+    for (0..@divExact(m.len, word_size)) |word_index| {
+        const word = std.mem.readInt(word_type, m[(word_index * word_size)..][0..word_size], .big);
+
+        if (word >= max_word_range) {
+            std.debug.print("!!!", .{});
+            y = (k * y + marker) % prime;
+            y = (k * y + (word - offset)) % prime;
+        } else {
+            // y = (k * y + word) % prime;
+            y = @intCast((@as(double_word_type, k) * @as(double_word_type, y) + @as(double_word_type, word)) % @as(double_word_type, prime));
+        }
+
+        // std.debug.print(">>> {d}\n", .{y});
+    }
+
+    // std.debug.print("Poly accum 0 (self) {d}\n", .{y});
+    // std.debug.print(">>> {d} {any}\n", .{k, m});
+    // _ = 7;
+
+    return y;
+}
+
+
+// Input:
+//   K, string of length 24 bytes.
+//   M, string of length less than 2^64 bytes.
+// Output:
+//   Y, string of length 16 bytes.
+fn l2(k: *const [24]u8, m: []const u8, output: *[16]u8) void {
+    const mask_64 = 0x01ffffff01ffffff;
+    const mask_128 = 0x01ffffff01ffffff01ffffff01ffffff;
+
+    // const mask_32 = (1 << 25) - 1;
+    // const mask_64 = (mask_32 << 32) + mask_32;
+    // const mask_128 = (mask_64 << 64) + mask_64;
+
+    const k64 = std.mem.readInt(u64, k[0..8], .big) & mask_64;
+    const k128 = std.mem.readInt(u128, k[8..24], .big) & mask_128;
+    // std.debug.print("!!!! {d}\n", .{k64});
+
+    const boundary = 1 << 17;
+    // const boundary = (1 << 17) - 1;
+    // std.debug.print("L2 boundary {d}\n", .{boundary});
+    // std.debug.print("L2 m.len {d}\n", .{m.len});
+
+    if (m.len <= boundary) {
+        const y = poly(u64, (1 << 64) - (1 << 32), k64, m);
+        @memset(output[0..8], 0);
+        std.mem.writeInt(u64, output[8..16], y, .big); // TODO: Not sure
+        // std.debug.print("!!!! small {d}\n", .{y});
+    } else {
+        const rest = m.len - boundary;
+        const m_1 = m[0..boundary];
+        // std.debug.print("L2 rest {d}\n", .{rest});
+
+        const y1 = poly(u64, (1 << 64) - (1 << 32), k64, m_1);
+
+        // Prefix (16) + M_2 (rest) + 0x80 (1) + padding
+        const nominal_size = 16 + rest + 1;
+        const padded_size = (std.math.divCeil(usize, nominal_size, 16) catch unreachable) * 16;
+
+        var m_2 = std.heap.page_allocator.alloc(u8, padded_size) catch unreachable;
+        defer std.heap.page_allocator.free(m_2);
+
+        @memset(m_2[0..8], 0);
+        std.mem.writeInt(u64, m_2[8..16], y1, .big);
+        @memcpy(m_2[16..(16 + rest)], m[boundary..]);
+        m_2[16 + rest] = 0x80;
+        @memset(m_2[(16 + rest + 1)..], 0);
+
+        // std.debug.print("{any}\n", .{m_2});
+
+        const y2 = poly(u128, (1 << 128) - (1 << 64), k128, m_2);
+        std.mem.writeInt(u128, output, y2, .big);
+    }
+}
+
 
 // Input:
 //   K1, string of length 64 bytes.
@@ -217,9 +329,12 @@ fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
     for (0..8) |i| {
         const m_i = std.mem.readInt(u16, m[(i * 2)..][0..2], .big);
         const k_i = @mod(std.mem.readInt(u64, k1[(i * 8)..][0..8], .big), PRIME_36);
+        // std.debug.print(">>> m_i {d} k_i {d}\n", .{m_i, k_i});
 
         y += m_i * k_i;
     }
+
+    // std.debug.print(">>> L3 pre-mod {d}\n", .{y});
 
     const z: u32 = @truncate(@mod(y, PRIME_36));
     return z ^ k2;
@@ -266,17 +381,29 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
         );
 
         // std.debug.print("{any}\n", .{m});
-        std.debug.print("{any}\n", .{l1_output});
+        // std.debug.print("{any}\n", .{l1_output});
 
         var l2_output: [16]u8 = undefined;
-        @memset(l2_output[0..8], 0);
-        @memcpy(l2_output[8..16], l1_output);
+
+        if (m.len <= L1_KEY_LEN) {
+            @memset(l2_output[0..8], 0);
+            @memcpy(l2_output[8..16], l1_output);
+        } else {
+            l2(
+                l2_key[(iter_index * 24)..][0..24],
+                l1_output,
+                &l2_output,
+            );
+        }
 
         const iter_result = l3(
             l3_key1[(iter_index * 64)..][0..64],
             std.mem.readInt(u32, l3_key2[(iter_index * 4)..][0..4], .big),
             &l2_output,
         );
+
+        // std.debug.print("Iter {d} result {d}\n", .{iter_index, iter_result});
+        // _ = 1;
 
         std.mem.writeInt(
             u32,
@@ -311,23 +438,26 @@ fn umac(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, nonce: []
 
 
 pub fn main() !void {
-    const tag_len = 4; // 4, 8, 12 or 16
+    const tag_len: usize = TAG_LEN; // 4, 8, 12 or 16
 
     var rand = std.Random.DefaultPrng.init(0);
 
+    var message = std.heap.page_allocator.alloc(u8, 1 << 25) catch unreachable;
+
     var key: [KEY_LEN]u8 = undefined;
-    var message: [3]u8 align(8) = undefined;
+    // var message: [1 << 20]u8 align(8) = undefined;
     var result_self: [tag_len]u8 = undefined;
     var result_ref: [tag_len]u8 = undefined;
 
     // const message_len = message.len;
-    const message_len = 0;
+    const message_len = 1 << 5; // (1 << 24) + 1;
 
-    // std.Random.bytes(rand.random(), &key);
-    std.Random.bytes(rand.random(), &message);
+    std.Random.bytes(rand.random(), &key);
+    std.Random.bytes(rand.random(), message);
 
     @memcpy(&key, "abcdefghijklmnop");
-    @memcpy(&message, "aaa");
+    @memset(message, "a"[0]);
+    // @memcpy(&message, "aaa");
 
 
     // Self
@@ -335,7 +465,7 @@ pub fn main() !void {
     @memset(&result_self, 0);
     uhash(KEY_LEN, &key, message[0..message_len], &result_self);
 
-    std.debug.print("----", .{});
+    // std.debug.print("----", .{});
 
 
     // Reference
@@ -344,7 +474,7 @@ pub fn main() !void {
 
     {
         const ctx = fastcrypto.uhash_alloc(&key);
-        _ = fastcrypto.uhash(ctx, &message, message_len, &result_ref);
+        _ = fastcrypto.uhash(ctx, message.ptr, @intCast(message_len), &result_ref);
         defer _ = fastcrypto.uhash_free(ctx);
     }
 
@@ -352,7 +482,7 @@ pub fn main() !void {
     std.debug.print("\n\nSelf {any}\n", .{result_self});
     std.debug.print("Ref  {any}\n", .{result_ref});
 
-    std.debug.print("\n\nSelf {s}\n", .{std.fmt.bytesToHex(result_self, .lower)});
+    std.debug.print("\nSelf {s}\n", .{std.fmt.bytesToHex(result_self, .lower)});
     std.debug.print("Ref  {s}\n", .{std.fmt.bytesToHex(result_ref, .lower)});
 
 
@@ -364,7 +494,7 @@ pub fn main() !void {
 
     {
         const ctx = fastcrypto.umac_new(&key);
-        _ = fastcrypto.umac(ctx, &message, message_len, &result_ref, &nonce);
+        _ = fastcrypto.umac(ctx, message.ptr, @intCast(message_len), &result_ref, &nonce);
         defer _ = fastcrypto.umac_delete(ctx);
     }
 
@@ -373,6 +503,6 @@ pub fn main() !void {
     std.debug.print("\n\nSelf {any}\n", .{result_self});
     std.debug.print("Ref  {any}\n", .{result_ref});
 
-    std.debug.print("\n\nSelf {s}\n", .{std.fmt.bytesToHex(result_self, .lower)});
+    std.debug.print("\nSelf {s}\n", .{std.fmt.bytesToHex(result_self, .lower)});
     std.debug.print("Ref  {s}\n", .{std.fmt.bytesToHex(result_ref, .lower)});
 }
