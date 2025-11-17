@@ -88,11 +88,10 @@ fn pdf(comptime key_len: comptime_int, key: *const [key_len]u8, nonce: []const u
     var index: usize = undefined;
 
     if (tag_len == 4 or tag_len == 8) {
-        if (BLOCK_LEN != 16) {
+        if (BLOCK_LEN > 1024) {
             std.debug.panic("Unsupported BLOCK_LEN for tag_len 4 or 8", .{});
         }
 
-        // log(1024/4)/log(2)
         index = nonce[nonce.len - 1] % @divExact(BLOCK_LEN, tag_len);
     } else {
         index = 0;
@@ -165,7 +164,7 @@ fn nh(k: *const [L1_KEY_LEN]u8, m: []const u8) u64 {
 //   K, string of length 1024 bytes.
 //   M, string of length less than 2^67 bits.
 // Output:
-//   Y, string of length (8 * ceil(bytelength(M)/L1_KEY_LEN)) bytes.
+//   Y, string of length (8 * max(1, ceil(bytelength(M)/L1_KEY_LEN))) bytes.
 //
 fn l1(k: *const [L1_KEY_LEN]u8, m: []const u8, output: [*]u8) void {
     const chunk_count = @max(std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable, 1);
@@ -177,7 +176,10 @@ fn l1(k: *const [L1_KEY_LEN]u8, m: []const u8, output: [*]u8) void {
 
         var padded_chunk: []const u8 = undefined;
 
-        if (chunk_size % L1_PAD_BOUNDARY != 0) {
+        if (chunk_size == 0) {
+            // Not written in the RFC
+            padded_chunk = &[_]u8{0} ** L1_PAD_BOUNDARY;
+        } else if (chunk_size % L1_PAD_BOUNDARY != 0) {
             const padded_chunk_size = (std.math.divCeil(usize, chunk_size, L1_PAD_BOUNDARY) catch unreachable) * L1_PAD_BOUNDARY;
             var padded_chunk_buffer: [L1_KEY_LEN]u8 = undefined;
 
@@ -264,7 +266,7 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
         );
 
         // std.debug.print("{any}\n", .{m});
-        // std.debug.print("{any}\n", .{l1_output});
+        std.debug.print("{any}\n", .{l1_output});
 
         var l2_output: [16]u8 = undefined;
         @memset(l2_output[0..8], 0);
