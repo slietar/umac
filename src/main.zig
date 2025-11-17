@@ -9,7 +9,7 @@ const openssl = @cImport({
 });
 
 
-const BLOCK_LEN = 16;
+const BLOCK_LEN = 16; // At least 16 and a power of two
 const KEY_LEN = 16; // 16, 24 or 32
 
 const L1_PAD_BOUNDARY = 32;
@@ -76,29 +76,39 @@ test "kdf" {
 }
 
 
+// Input:
+//   K, string of length KEYLEN bytes.
+//   Nonce, string of length 1 to BLOCKLEN bytes.
+//   taglen, the integer 4, 8, 12 or 16.
+// Output:
+//   Y, string of length taglen bytes.
 fn pdf(comptime key_len: comptime_int, key: *const [key_len]u8, nonce: []const u8, output: []u8) void {
     const tag_len = output.len;
-    std.debug.assert(tag_len == 4 or tag_len == 8 or tag_len == 12 or tag_len == 16);
 
-    var index = undefined;
+    var index: usize = undefined;
 
     if (tag_len == 4 or tag_len == 8) {
-        // TODO
-        index = std.mem.readInt(u32, nonce);
+        if (BLOCK_LEN != 16) {
+            std.debug.panic("Unsupported BLOCK_LEN for tag_len 4 or 8", .{});
+        }
+
+        // log(1024/4)/log(2)
+        index = nonce[nonce.len - 1] % @divExact(BLOCK_LEN, tag_len);
+    } else {
+        index = 0;
     }
 
-    var nonce_padded = [_]u8{0} ** BLOCK_LEN;
-    @memcpy(&nonce_padded[0..nonce.len], nonce);
+    var padded_nonce: [BLOCK_LEN]u8 = undefined;
+    @memcpy(padded_nonce[0..nonce.len], nonce);
+    @memset(padded_nonce[nonce.len..], 0);
+
+    padded_nonce[nonce.len - 1] ^= @intCast(index);
 
     var subkey: [KEY_LEN]u8 = undefined;
     kdf(key_len, key, 0, &subkey);
-    const block = aesEncrypt(key_len, &subkey, &nonce_padded);
+    const block = aesEncrypt(key_len, &subkey, &padded_nonce);
 
-    if (tag_len == 4 or tag_len == 8) {
-        @memcpy(output, block[(index * tag_len + 1)..(index * tag_len + tag_len)]);
-    } else {
-        @memcpy(output, block[0..tag_len]);
-    }
+    @memcpy(output, block[(index * tag_len)..(index * tag_len + tag_len)]);
 }
 
 
@@ -243,7 +253,7 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
     // std.debug.print("{s}\n", .{std.fmt.bytesToHex(&l2_key, .lower)[0..(iter_count * 24 * 2)]});
 
     for (0..iter_count) |iter_index| {
-        const l1_output_size = (std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable) * 8;
+        const l1_output_size = @max(std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable, 1) * 8;
         const l1_output = std.heap.page_allocator.alloc(u8, l1_output_size) catch unreachable;
         defer std.heap.page_allocator.free(l1_output);
 
@@ -276,22 +286,52 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
 }
 
 
+// Input:
+//   K, string of length KEYLEN bytes.
+//   M, string of length less than 2^67 bits.
+//   Nonce, string of length 1 to BLOCKLEN bytes.
+//   taglen, the integer 4, 8, 12 or 16.
+// Output:
+//   Tag, string of length taglen bytes.
+fn umac(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, nonce: []const u8, output: []u8) void {
+    const tag_len = output.len;
+    std.debug.assert(tag_len == 4 or tag_len == 8 or tag_len == 12 or tag_len == 16);
+
+    var uhash_output: [16]u8 = undefined;
+    uhash(key_len, key, m, uhash_output[0..tag_len]);
+
+    pdf(key_len, key, nonce, output[0..tag_len]);
+
+    for (0..tag_len) |index| {
+        output[index] ^= uhash_output[index];
+    }
+}
+
+
 pub fn main() !void {
+    const tag_len = 4; // 4, 8, 12 or 16
+
     var rand = std.Random.DefaultPrng.init(0);
 
     var key: [KEY_LEN]u8 = undefined;
-    var message: [59]u8 align(8) = undefined;
-    var result_self: [4]u8 = undefined; // tag_len = 16
-    var result_ref: [4]u8 = undefined; // tag_len = 16
+    var message: [3]u8 align(8) = undefined;
+    var result_self: [tag_len]u8 = undefined;
+    var result_ref: [tag_len]u8 = undefined;
 
-    std.Random.bytes(rand.random(), &key);
+    // const message_len = message.len;
+    const message_len = 0;
+
+    // std.Random.bytes(rand.random(), &key);
     std.Random.bytes(rand.random(), &message);
+
+    @memcpy(&key, "abcdefghijklmnop");
+    @memcpy(&message, "aaa");
 
 
     // Self
 
     @memset(&result_self, 0);
-    uhash(KEY_LEN, &key, &message, &result_self);
+    uhash(KEY_LEN, &key, message[0..message_len], &result_self);
 
     std.debug.print("----", .{});
 
@@ -300,15 +340,37 @@ pub fn main() !void {
 
     @memset(&result_ref, 0);
 
-    const ctx = fastcrypto.uhash_alloc(&key);
-    _ = fastcrypto.uhash(ctx, &message, message.len, &result_ref);
-    defer _ = fastcrypto.uhash_free(ctx);
+    {
+        const ctx = fastcrypto.uhash_alloc(&key);
+        _ = fastcrypto.uhash(ctx, &message, message_len, &result_ref);
+        defer _ = fastcrypto.uhash_free(ctx);
+    }
 
 
     std.debug.print("\n\nSelf {any}\n", .{result_self});
     std.debug.print("Ref  {any}\n", .{result_ref});
 
+    std.debug.print("\n\nSelf {s}\n", .{std.fmt.bytesToHex(result_self, .lower)});
+    std.debug.print("Ref  {s}\n", .{std.fmt.bytesToHex(result_ref, .lower)});
 
-    // const k = "abcdefghijklmnop";
-    // const nonce = "bcdefghi";
+
+    // Full UMAC
+
+    // var nonce align(8) = [_]u8{0x6a, 0x7b};
+    var nonce: [8]u8 align(8) = undefined;
+    @memcpy(&nonce, "bcdefghi");
+
+    {
+        const ctx = fastcrypto.umac_new(&key);
+        _ = fastcrypto.umac(ctx, &message, message_len, &result_ref, &nonce);
+        defer _ = fastcrypto.umac_delete(ctx);
+    }
+
+    umac(KEY_LEN, &key, message[0..message_len], &nonce, &result_self);
+
+    std.debug.print("\n\nSelf {any}\n", .{result_self});
+    std.debug.print("Ref  {any}\n", .{result_ref});
+
+    std.debug.print("\n\nSelf {s}\n", .{std.fmt.bytesToHex(result_self, .lower)});
+    std.debug.print("Ref  {s}\n", .{std.fmt.bytesToHex(result_ref, .lower)});
 }
