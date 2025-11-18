@@ -35,7 +35,7 @@ fn aesEncrypt(comptime key_len: comptime_int, key: *const [key_len]u8, input: *c
     var aesKey: openssl.AES_KEY = std.mem.zeroes(openssl.AES_KEY);
 
     if (openssl.AES_set_encrypt_key(key, key_len * 8, &aesKey) != 0) {
-        std.debug.panic("Failed to set AES key", .{});
+        @panic("Failed to set AES key");
     }
 
     openssl.AES_encrypt(input, &output, &aesKey);
@@ -102,7 +102,7 @@ fn pdf(comptime key_len: comptime_int, key: *const [key_len]u8, nonce: []const u
 
     if (tag_len == 4 or tag_len == 8) {
         if (BLOCK_LEN > 1024) {
-            std.debug.panic("Unsupported BLOCK_LEN for tag_len 4 or 8", .{});
+            @panic("Unsupported BLOCK_LEN for tag_len 4 or 8");
         }
 
         index = nonce[nonce.len - 1] % @divExact(BLOCK_LEN, tag_len);
@@ -243,20 +243,13 @@ fn poly(comptime word_type: anytype, max_word_range: word_type, k: word_type, m:
         const word = std.mem.readInt(word_type, m[(word_index * word_size)..][0..word_size], .big);
 
         if (word >= max_word_range) {
-            std.debug.print("!!!", .{});
             y = (k * y + marker) % prime;
             y = (k * y + (word - offset)) % prime;
         } else {
             // y = (k * y + word) % prime;
             y = @intCast((@as(double_word_type, k) * @as(double_word_type, y) + @as(double_word_type, word)) % @as(double_word_type, prime));
         }
-
-        // std.debug.print(">>> {d}\n", .{y});
     }
-
-    // std.debug.print("Poly accum 0 (self) {d}\n", .{y});
-    // std.debug.print(">>> {d} {any}\n", .{k, m});
-    // _ = 7;
 
     return y;
 }
@@ -268,21 +261,14 @@ fn poly(comptime word_type: anytype, max_word_range: word_type, k: word_type, m:
 // Output:
 //   Y, string of length 16 bytes.
 fn l2(k: *const [24]u8, m: []const u8, output: *[16]u8) void {
-    const mask_64 = 0x01ffffff01ffffff;
-    const mask_128 = 0x01ffffff01ffffff01ffffff01ffffff;
-
-    // const mask_32 = (1 << 25) - 1;
-    // const mask_64 = (mask_32 << 32) + mask_32;
-    // const mask_128 = (mask_64 << 64) + mask_64;
+    const mask_32 = (1 << 25) - 1;
+    const mask_64 = (mask_32 << 32) + mask_32;
+    const mask_128 = (mask_64 << 64) + mask_64;
 
     const k64 = std.mem.readInt(u64, k[0..8], .big) & mask_64;
     const k128 = std.mem.readInt(u128, k[8..24], .big) & mask_128;
-    // std.debug.print("!!!! {d}\n", .{k64});
 
     const boundary = 1 << 17;
-    // const boundary = (1 << 17) - 1;
-    // std.debug.print("L2 boundary {d}\n", .{boundary});
-    // std.debug.print("L2 m.len {d}\n", .{m.len});
 
     if (m.len <= boundary) {
         const y = poly(u64, (1 << 64) - (1 << 32), k64, m);
@@ -309,8 +295,6 @@ fn l2(k: *const [24]u8, m: []const u8, output: *[16]u8) void {
         m_2[16 + rest] = 0x80;
         @memset(m_2[(16 + rest + 1)..], 0);
 
-        // std.debug.print("{any}\n", .{m_2});
-
         const y2 = poly(u128, (1 << 128) - (1 << 64), k128, m_2);
         std.mem.writeInt(u128, output, y2, .big);
     }
@@ -329,12 +313,9 @@ fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
     for (0..8) |i| {
         const m_i = std.mem.readInt(u16, m[(i * 2)..][0..2], .big);
         const k_i = @mod(std.mem.readInt(u64, k1[(i * 8)..][0..8], .big), PRIME_36);
-        // std.debug.print(">>> m_i {d} k_i {d}\n", .{m_i, k_i});
 
         y += m_i * k_i;
     }
-
-    // std.debug.print(">>> L3 pre-mod {d}\n", .{y});
 
     const z: u32 = @truncate(@mod(y, PRIME_36));
     return z ^ k2;
@@ -363,12 +344,6 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
     kdf(key_len, key, 3, l3_key1[0..(iter_count * 64)]);
     kdf(key_len, key, 4, l3_key2[0..(iter_count * 4)]);
 
-    // std.debug.print("{any}\n", .{l3_key1[0..(iter_count * 64)]});
-
-    // std.debug.print("{any}\n", .{L1_KEY_LEN + (iter_count - 1) * 16});
-    // std.debug.print("{s}\n", .{std.fmt.bytesToHex(&l1_key, .lower)[0..((L1_KEY_LEN + (iter_count - 1) * 16) * 2)]});
-    // std.debug.print("{s}\n", .{std.fmt.bytesToHex(&l2_key, .lower)[0..(iter_count * 24 * 2)]});
-
     for (0..iter_count) |iter_index| {
         const l1_output_size = @max(std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable, 1) * 8;
         const l1_output = std.heap.page_allocator.alloc(u8, l1_output_size) catch unreachable;
@@ -379,9 +354,6 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
             m,
             l1_output.ptr,
         );
-
-        // std.debug.print("{any}\n", .{m});
-        // std.debug.print("{any}\n", .{l1_output});
 
         var l2_output: [16]u8 = undefined;
 
@@ -401,9 +373,6 @@ fn uhash(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, output: 
             std.mem.readInt(u32, l3_key2[(iter_index * 4)..][0..4], .big),
             &l2_output,
         );
-
-        // std.debug.print("Iter {d} result {d}\n", .{iter_index, iter_result});
-        // _ = 1;
 
         std.mem.writeInt(
             u32,
@@ -433,6 +402,161 @@ fn umac(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, nonce: []
 
     for (0..tag_len) |index| {
         output[index] ^= uhash_output[index];
+    }
+}
+
+
+fn Umac(tag_len: comptime_int) type {
+    return struct {
+        const Self = @This();
+
+        data: []u8,
+        key: *const [KEY_LEN]u8,
+        nonce: []const u8,
+
+        pub fn init(key: *const [KEY_LEN]u8, nonce: []const u8) Self {
+            return Self{
+                .data = &[0]u8{},
+                .key = key,
+                .nonce = nonce,
+            };
+        }
+
+        pub fn update(self: *Self, chunk: []const u8) void {
+            var allocator = std.heap.page_allocator;
+            var new_data = allocator.alloc(u8, self.data.len + chunk.len) catch unreachable;
+
+            @memcpy(new_data[0..self.data.len], self.data);
+            @memcpy(new_data[self.data.len..], chunk);
+
+            allocator.free(self.data);
+            self.data = new_data;
+        }
+
+        pub fn finish(self: *Self) [tag_len]u8 {
+            var output: [tag_len]u8 = undefined;
+            var allocator = std.heap.page_allocator;
+            umac(KEY_LEN, self.key, self.data, self.nonce, &output);
+            allocator.free(self.data);
+            self.data = &[0]u8{};
+
+            return output;
+        }
+
+        pub fn compute(
+            key: *const [KEY_LEN]u8,
+            nonce: []const u8,
+            message: []const u8,
+        ) [tag_len]u8 {
+            var instance = Self.init(key, nonce);
+            instance.update(message);
+
+            return instance.finish();
+        }
+    };
+}
+
+
+test "umac" {
+    const key = "abcdefghijklmnop";
+    const nonce = "bcdefghi";
+
+    const TestCase = struct {
+        part: []const u8,
+        repeat: usize,
+        expected: [3]([]const u8),
+    };
+
+    const test_cases = [_]TestCase{
+        .{
+            .part = "",
+            .repeat = 1,
+            .expected = .{"113145FB", "6E155FAD26900BE1", "32FEDB100C79AD58F07FF764"},
+        },
+        .{
+            .part = "a",
+            .repeat = 3,
+            .expected = .{"3B91D102", "44B5CB542F220104", "185E4FE905CBA7BD85E4C2DC"},
+        },
+        .{
+            .part = "a",
+            .repeat = 1 << 10,
+            .expected = .{"599B350B", "26BF2F5D60118BD9", "7A54ABE04AF82D60FB298C3C"},
+        },
+        .{
+            .part = "a",
+            .repeat = 1 << 15,
+            .expected = .{"58DCF532", "27F8EF643B0D118D", "7B136BD911E4B734286EF2BE"},
+        },
+        .{
+            .part = "a",
+            .repeat = 1 << 20,
+            .expected = .{"DB6364D1", "A4477E87E9F55853", "F8ACFA3AC31CFEEA047F7B11"},
+        },
+        // .{
+        //     .part = "a",
+        //     .repeat = 1 << 25,
+        //     .expected = .{"5109A660", "2E2DBC36860A0A5F", "72C6388BACE3ACE6FBF062D9"},
+        // },
+        .{
+            .part = "abc",
+            .repeat = 1,
+            .expected = .{"ABF3A3A0", "D4D7B9F6BD4FBFCF", "883C3D4B97A61976FFCF2323"},
+        },
+        .{
+            .part = "abc",
+            .repeat = 500,
+            .expected = .{"ABEB3C8B", "D4CF26DDEFD5C01A", "8824A260C53C66A36C9260A6"},
+        },
+    };
+
+
+    // This constant must be at least as large as the largest nonrepeated message
+    const CHUNK_LEN = (1 << 10) + (1 << 9);
+
+    for (test_cases) |test_case| {
+        inline for (.{4, 8, 12}, 0..) |tag_len, tag_len_index| {
+            const part_len = test_case.part.len;
+            const message_len = part_len * test_case.repeat;
+
+            var chunk: [CHUNK_LEN]u8 = undefined;
+            var tag: [tag_len]u8 = undefined;
+
+            if (message_len > CHUNK_LEN) {
+                var instance = Umac(tag_len).init(key, nonce);
+                var repeat_index: usize = 0;
+
+                while (repeat_index < test_case.repeat) {
+                    const chunk_repeat_count = @min(@divFloor(CHUNK_LEN, part_len), test_case.repeat - repeat_index);
+                    repeat_index += chunk_repeat_count;
+
+                    for (0..chunk_repeat_count) |chunk_repeat_index| {
+                        @memcpy(
+                            chunk[(chunk_repeat_index * part_len)..][0..part_len],
+                            test_case.part,
+                        );
+                    }
+
+                    instance.update(chunk[0..(chunk_repeat_count * part_len)]);
+                }
+
+                tag = instance.finish();
+            } else {
+                for (0..test_case.repeat) |repeat_index| {
+                    @memcpy(
+                        chunk[(repeat_index * test_case.part.len)..][0..test_case.part.len],
+                        test_case.part,
+                    );
+                }
+
+                tag = Umac(tag_len).compute(key, nonce, chunk[0..message_len]);
+            }
+
+            var expected_tag: [tag_len]u8 = undefined;
+            _ = try std.fmt.hexToBytes(&expected_tag, test_case.expected[tag_len_index]);
+
+            try std.testing.expectEqualSlices(u8, tag[0..tag_len], expected_tag[0..tag_len]);
+        }
     }
 }
 
@@ -498,11 +622,11 @@ pub fn main() !void {
         defer _ = fastcrypto.umac_delete(ctx);
     }
 
-    umac(KEY_LEN, &key, message[0..message_len], &nonce, &result_self);
+    const result = Umac(TAG_LEN).compute(&key, message[0..message_len], &nonce);
 
-    std.debug.print("\n\nSelf {any}\n", .{result_self});
+    std.debug.print("\n\nSelf {any}\n", .{result});
     std.debug.print("Ref  {any}\n", .{result_ref});
 
-    std.debug.print("\nSelf {s}\n", .{std.fmt.bytesToHex(result_self, .lower)});
+    std.debug.print("\nSelf {s}\n", .{std.fmt.bytesToHex(&result, .lower)});
     std.debug.print("Ref  {s}\n", .{std.fmt.bytesToHex(result_ref, .lower)});
 }
