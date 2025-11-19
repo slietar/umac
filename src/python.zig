@@ -33,11 +33,16 @@ const UMAC = struct {
 };
 
 var umac_methods = [_]py.PyMethodDef{
-    // .{
-    //     .ml_name = "open",
-    //     .ml_meth = null,
-    //     .ml_flags = py.METH_O | py.METH_STATIC,
-    // },
+    .{
+        .ml_name = "update",
+        .ml_meth = @ptrCast(&UMACUpdate),
+        .ml_flags = py.METH_VARARGS | py.METH_KEYWORDS,
+    },
+    .{
+        .ml_name = "digest",
+        .ml_meth = @ptrCast(&UMACDigest),
+        .ml_flags = py.METH_NOARGS,
+    },
     .{ .ml_name = null }, // Sentinel
 };
 
@@ -114,8 +119,39 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
     return obj;
 }
 
+fn UMACUpdate(instance: [*c]py.PyObject, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callconv(.c) [*c]py.PyObject {
+    var part_buffer: py.Py_buffer = undefined;
+
+    const keywords = [_][*c]const u8{"", null};
+
+    if (
+        py.PyArg_ParseTupleAndKeywords(
+            args,
+            kwargs,
+            "y*",
+            @ptrCast(&keywords),
+            &part_buffer,
+        ) == 0
+    ) return null;
+
+    const part_ptr: [*]const u8 = @ptrCast(part_buffer.buf);
+    const part = part_ptr[0..@intCast(part_buffer.len)];
+
+    const self: *UMAC = @ptrCast(instance);
+    self.umac.update(part);
+
+    return py.Py_None();
+}
+
+fn UMACDigest(instance: [*c]py.PyObject, _: [*c]py.PyObject) callconv(.c) [*c]py.PyObject {
+    const self: *UMAC = @ptrCast(instance);
+
+    const tag = self.umac.finish();
+    return py.PyBytes_FromStringAndSize(@ptrCast(&tag), tag.len) orelse return null;
+}
+
 var umac_type_slots = [_]py.PyType_Slot{
-    // .{ .slot = py.Py_tp_methods, .pfunc = @ptrCast(&umac_methods) },
+    .{ .slot = py.Py_tp_methods, .pfunc = @ptrCast(&umac_methods) },
     .{ .slot = py.Py_tp_new, .pfunc = @constCast(&UMACNew) },
     .{ .slot = 0, .pfunc = null }, // Sentinel
 };
