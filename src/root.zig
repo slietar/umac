@@ -6,8 +6,8 @@ const openssl = @cImport({
 });
 
 
-const BLOCK_LEN = 16; // At least 16 and a power of two
-const KEY_LEN = 16; // 16, 24 or 32
+pub const BLOCK_LEN = 16; // At least 16 and a power of two
+pub const KEY_LEN = 16; // 16, 24 or 32
 
 const L1_PAD_BOUNDARY = 32;
 const L1_KEY_LEN = 1024;
@@ -343,7 +343,7 @@ fn umac(key_len: comptime_int, key: *const [key_len]u8, m: []const u8, nonce: []
 }
 
 
-fn Umac(tag_len: comptime_int) type {
+pub fn Umac(tag_len: comptime_int) type {
     return struct {
         const Self = @This();
 
