@@ -10,75 +10,23 @@ pub const BLOCK_LEN = 16; // At least 16 and a power of two
 pub const KEY_LEN = 16; // 16, 24 or 32
 
 
-const Cipher = struct {
-    const Self = @This();
-
-    ptr: *anyopaque,
-    buildEncryptorFn: *const fn (ptr: *anyopaque, key: *const [KEY_LEN]u8) Encryptor,
-
-    fn buildEncryptor(self: *const Self, key: *const [KEY_LEN]u8) Encryptor {
-        return self.buildEncryptorFn(self.ptr, key);
-    }
-};
-
-const Encryptor = struct {
-    const Self = @This();
-
-    ptr: *anyopaque,
-    encryptFn: *const fn (ptr: *anyopaque, block_in: *const [BLOCK_LEN]u8, block_out: *[BLOCK_LEN]u8) void,
-    freeFn: *const fn (ptr: *anyopaque) void,
-    // initFn: *const fn (ptr: *anyopaque, key: *const [KEY_LEN]u8) void,
-
-    fn encrypt(self: *const Self, block_in: *const [BLOCK_LEN]u8, block_out: *[BLOCK_LEN]u8) void {
-        self.encryptFn(self.ptr, block_in, block_out);
-    }
-
-    fn free(self: *const Self) void {
-        self.freeFn(self.ptr);
-    }
-};
-
-
-const OpenSSLCipher = struct {
-    const Self = @This();
-
-    allocator: std.mem.Allocator,
-
-    fn buildEncryptor(self: *Self, key: *const [KEY_LEN]u8) Encryptor {
-        var encryptor = self.allocator.create(OpenSSLEncryptor) catch unreachable;
-        encryptor.cipher = self;
-
-        if (openssl.AES_set_encrypt_key(key, KEY_LEN * 8, &encryptor.aes_key) != 0) {
-            @panic("Failed to set AES key");
-        }
-
-        return Encryptor{
-            .ptr = encryptor,
-            .encryptFn = @ptrCast(&OpenSSLEncryptor.encrypt),
-            .freeFn = @ptrCast(&OpenSSLEncryptor.free),
-        };
-    }
-
-    fn toCipher(self: *Self) Cipher {
-        return Cipher{
-            .ptr = self,
-            .buildEncryptorFn = @ptrCast(&Self.buildEncryptor),
-        };
-    }
-};
-
 const OpenSSLEncryptor = struct {
     const Self = @This();
 
     aes_key: openssl.AES_KEY,
-    cipher: *OpenSSLCipher,
 
     fn encrypt(self: *Self, block_in: *const [BLOCK_LEN]u8, block_out: *[BLOCK_LEN]u8) void {
         openssl.AES_encrypt(@ptrCast(block_in), @ptrCast(block_out), &self.aes_key);
     }
 
-    fn free(self: *Self) void {
-        self.cipher.allocator.destroy(self);
+    fn free(_: *Self) void {
+
+    }
+
+    fn init(self: *Self, key: *const [KEY_LEN]u8) void {
+        if (openssl.AES_set_encrypt_key(key, KEY_LEN * 8, &self.aes_key) != 0) {
+            @panic("Failed to set AES key");
+        }
     }
 };
 
@@ -88,10 +36,7 @@ const L1_PAD_BOUNDARY = 32;
 const L1_KEY_LEN = 1024;
 
 
-fn kdf(cipher: Cipher, key: *const [KEY_LEN]u8, index: u8, output: []u8) void {
-    const encryptor = cipher.buildEncryptor(key);
-    defer encryptor.free();
-
+fn kdf(Encryptor: anytype, encryptor: *Encryptor, index: u8, output: []u8) void {
     const iter_count = std.math.divCeil(u32, @intCast(output.len), BLOCK_LEN) catch unreachable;
 
     var cipher_input = [_]u8{0} ** BLOCK_LEN;
@@ -117,7 +62,7 @@ fn kdf(cipher: Cipher, key: *const [KEY_LEN]u8, index: u8, output: []u8) void {
 //   taglen, the integer 4, 8, 12 or 16.
 // Output:
 //   Y, string of length taglen bytes.
-fn pdf(cipher: Cipher, key: *const [KEY_LEN]u8, nonce: []const u8, output: []u8) void {
+fn pdf(Encryptor: anytype, key_encryptor: *Encryptor, nonce: []const u8, output: []u8) void {
     const tag_len = output.len;
 
     var index: usize = undefined;
@@ -139,9 +84,10 @@ fn pdf(cipher: Cipher, key: *const [KEY_LEN]u8, nonce: []const u8, output: []u8)
     padded_nonce[nonce.len - 1] ^= @intCast(index);
 
     var subkey: [KEY_LEN]u8 = undefined;
-    kdf(cipher, key, 0, &subkey);
+    kdf(Encryptor, key_encryptor, 0, &subkey);
 
-    const encryptor = cipher.buildEncryptor(&subkey);
+    var encryptor: Encryptor = undefined;
+    encryptor.init(&subkey);
     defer encryptor.free();
 
     var block: [BLOCK_LEN]u8 = undefined;
@@ -336,7 +282,7 @@ fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
 //   taglen, the integer 4, 8, 12 or 16.
 // Output:
 //   Y, string of length taglen bytes.
-fn uhash(cipher: Cipher, key: *const [KEY_LEN]u8, m: []const u8, output: []u8) void {
+fn uhash(Encryptor: anytype, key_encryptor: *Encryptor, m: []const u8, output: []u8) void {
     const tag_len = output.len;
 
     const iter_count = @divExact(tag_len, 4);
@@ -347,10 +293,10 @@ fn uhash(cipher: Cipher, key: *const [KEY_LEN]u8, m: []const u8, output: []u8) v
     var l3_key1: [max_iter_count * 64]u8 = undefined;
     var l3_key2: [max_iter_count * 4]u8 = undefined;
 
-    kdf(cipher, key, 1, l1_key[0..(L1_KEY_LEN + (iter_count - 1) * 16)]);
-    kdf(cipher, key, 2, l2_key[0..(iter_count * 24)]);
-    kdf(cipher, key, 3, l3_key1[0..(iter_count * 64)]);
-    kdf(cipher, key, 4, l3_key2[0..(iter_count * 4)]);
+    kdf(Encryptor, key_encryptor, 1, l1_key[0..(L1_KEY_LEN + (iter_count - 1) * 16)]);
+    kdf(Encryptor, key_encryptor, 2, l2_key[0..(iter_count * 24)]);
+    kdf(Encryptor, key_encryptor, 3, l3_key1[0..(iter_count * 64)]);
+    kdf(Encryptor, key_encryptor, 4, l3_key2[0..(iter_count * 4)]);
 
     for (0..iter_count) |iter_index| {
         const l1_output_size = @max(std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable, 1) * 8;
@@ -399,14 +345,18 @@ fn uhash(cipher: Cipher, key: *const [KEY_LEN]u8, m: []const u8, output: []u8) v
 //   taglen, the integer 4, 8, 12 or 16.
 // Output:
 //   Tag, string of length taglen bytes.
-fn umac(cipher: Cipher, key: *const [KEY_LEN]u8, m: []const u8, nonce: []const u8, output: []u8) void {
+fn umac(Encryptor: anytype, key: *const [KEY_LEN]u8, m: []const u8, nonce: []const u8, output: []u8) void {
     const tag_len = output.len;
     std.debug.assert(tag_len == 4 or tag_len == 8 or tag_len == 12 or tag_len == 16);
 
-    var uhash_output: [16]u8 = undefined;
-    uhash(cipher, key, m, uhash_output[0..tag_len]);
+    var key_encryptor: Encryptor = undefined;
+    key_encryptor.init(key);
+    defer key_encryptor.free();
 
-    pdf(cipher, key, nonce, output[0..tag_len]);
+    var uhash_output: [16]u8 = undefined;
+    uhash(Encryptor, &key_encryptor, m, uhash_output[0..tag_len]);
+
+    pdf(Encryptor, &key_encryptor, nonce, output[0..tag_len]);
 
     for (0..tag_len) |index| {
         output[index] ^= uhash_output[index];
@@ -414,18 +364,16 @@ fn umac(cipher: Cipher, key: *const [KEY_LEN]u8, m: []const u8, nonce: []const u
 }
 
 
-pub fn Umac(tag_len: comptime_int) type {
+pub fn Umac(Encryptor: anytype, tag_len: comptime_int) type {
     return struct {
         const Self = @This();
 
-        cipher: Cipher,
         data: []u8,
         key: *const [KEY_LEN]u8,
         nonce: []const u8,
 
-        pub fn init(cipher: Cipher, key: *const [KEY_LEN]u8, nonce: []const u8) Self {
+        pub fn init(key: *const [KEY_LEN]u8, nonce: []const u8) Self {
             return Self{
-                .cipher = cipher,
                 .data = &[0]u8{},
                 .key = key,
                 .nonce = nonce,
@@ -446,7 +394,7 @@ pub fn Umac(tag_len: comptime_int) type {
         pub fn finish(self: *Self) [tag_len]u8 {
             var output: [tag_len]u8 = undefined;
             var allocator = std.heap.page_allocator;
-            umac(self.cipher, self.key, self.data, self.nonce, &output);
+            umac(Encryptor, self.key, self.data, self.nonce, &output);
             allocator.free(self.data);
             self.data = &[0]u8{};
 
@@ -454,12 +402,11 @@ pub fn Umac(tag_len: comptime_int) type {
         }
 
         pub fn compute(
-            cipher: Cipher,
             key: *const [KEY_LEN]u8,
             nonce: []const u8,
             message: []const u8,
         ) [tag_len]u8 {
-            var instance = Self.init(cipher, key, nonce);
+            var instance = Self.init(key, nonce);
             instance.update(message);
 
             return instance.finish();
@@ -469,13 +416,6 @@ pub fn Umac(tag_len: comptime_int) type {
 
 
 test "umac" {
-    var openssl_cipher = OpenSSLCipher{
-        .allocator = std.heap.page_allocator,
-    };
-
-    const cipher = openssl_cipher.toCipher();
-
-
     const key = "abcdefghijklmnop";
     const nonce = "bcdefghi";
 
@@ -541,7 +481,7 @@ test "umac" {
             var tag: [tag_len]u8 = undefined;
 
             if (message_len > CHUNK_LEN) {
-                var instance = Umac(tag_len).init(cipher, key, nonce);
+                var instance = Umac(OpenSSLEncryptor, tag_len).init(key, nonce);
                 var repeat_index: usize = 0;
 
                 while (repeat_index < test_case.repeat) {
@@ -567,7 +507,7 @@ test "umac" {
                     );
                 }
 
-                tag = Umac(tag_len).compute(cipher, key, nonce, chunk[0..message_len]);
+                tag = Umac(OpenSSLEncryptor, tag_len).compute(key, nonce, chunk[0..message_len]);
             }
 
             var expected_tag: [tag_len]u8 = undefined;
