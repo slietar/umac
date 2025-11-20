@@ -16,78 +16,90 @@ fn runCommand(alloc: mem.Allocator, args: []const []const u8) std.process.Child.
 pub fn build(b: *std.Build) !void {
     const allocator = std.heap.page_allocator;
 
-    const target = b.standardTargetOptions(.{});
+    const TargetSpec = struct {
+        name: []const u8,
+        target: std.Build.ResolvedTarget,
+    };
+
+    const target_specs = [_]TargetSpec{
+        .{
+            .name = "macos-aarch64",
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .aarch64,
+                .os_tag = .macos,
+            }),
+        },
+        .{
+            .name = "linux-aarch64",
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .aarch64,
+                .os_tag = .linux,
+            }),
+        },
+        .{
+            .name = "linux-x86_64",
+            .target = b.resolveTargetQuery(.{
+                .cpu_arch = .x86_64,
+                .os_tag = .linux,
+            }),
+        },
+    };
+
     const optimize = b.standardOptimizeOption(.{});
 
+    for (target_specs) |target_spec| {
+        const target = target_spec.target;
 
-    const library_module_name = "umac";
-    const library_module = b.addModule(library_module_name, .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-    });
-
-
-    const python_library_module_name = "umac_python";
-    const python_library_module = b.addModule(python_library_module_name, .{
-        .root_source_file = b.path("src/python.zig"),
-        .target = target,
-    });
+        // const library_module_name = "umac";
+        // const library_module = b.addModule(library_module_name, .{
+        //     .root_source_file = b.path("src/root.zig"),
+        //     .target = target,
+        // });
 
 
-    const find_python_stdout = try runCommand(allocator, &[_][]const u8{"uv", "python", "find", "3.14"});
-    defer allocator.free(find_python_stdout);
+        const python_library_module_name = "umac_python";
+        const python_library_module = b.addModule(python_library_module_name, .{
+            .optimize = optimize,
+            .root_source_file = b.path("src/python.zig"),
+            .target = target,
+        });
 
-    const python_bin_path = find_python_stdout[0..(find_python_stdout.len - 1)];
-    const python_include_path = try runCommand(allocator, &[_][]const u8{python_bin_path, "-c", "print(__import__('sysconfig').get_path('include'), end='')"});
-    defer allocator.free(python_include_path);
-
-    python_library_module.addIncludePath(.{ .cwd_relative = python_include_path });
-
-
-    const python_dynamic_library = b.addLibrary(.{
-        .linkage = .dynamic,
-        .name = "umac_dynamic",
-        .root_module = python_library_module,
-    });
-
-    python_dynamic_library.linker_allow_shlib_undefined = true;
-
-    b.installArtifact(python_dynamic_library);
+        python_library_module.link_libc = true;
 
 
-    const executable_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = library_module_name, .module = library_module },
-        },
-    });
+        const find_python_stdout = try runCommand(allocator, &[_][]const u8{"uv", "python", "find", "3.14"});
+        defer allocator.free(find_python_stdout);
+
+        const python_bin_path = find_python_stdout[0..(find_python_stdout.len - 1)];
+        const python_include_path = try runCommand(allocator, &[_][]const u8{python_bin_path, "-c", "print(__import__('sysconfig').get_path('include'), end='')"});
+        defer allocator.free(python_include_path);
+
+        python_library_module.addIncludePath(.{ .cwd_relative = python_include_path });
 
 
-    const executable = b.addExecutable(.{
-        .name = "umac",
-        .root_module = executable_module,
-    });
+        const name = try std.fmt.allocPrint(b.allocator, "umac-{s}-{s}", .{
+            @tagName(target.result.cpu.arch),
+            @tagName(target.result.os.tag),
+        });
 
-    b.installArtifact(executable);
+        const python_dynamic_library = b.addLibrary(.{
+            .linkage = .dynamic,
+            .name = name,
+            .root_module = python_library_module,
+        });
 
-    const run_step = b.step("run", "Run the app");
-    const run_cmd = b.addRunArtifact(executable);
+        python_dynamic_library.linker_allow_shlib_undefined = true;
 
-    run_step.dependOn(&run_cmd.step);
-    run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
+        b.installArtifact(python_dynamic_library);
     }
 
-    const mod_tests = b.addTest(.{
-        .root_module = library_module,
-    });
 
-    const run_mod_tests = b.addRunArtifact(mod_tests);
+    // const mod_tests = b.addTest(.{
+    //     .root_module = library_module,
+    // });
 
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
+    // const run_mod_tests = b.addRunArtifact(mod_tests);
+
+    // const test_step = b.step("test", "Run tests");
+    // test_step.dependOn(&run_mod_tests.step);
 }
