@@ -9,6 +9,113 @@ const py = @cImport({
 const umac = @import("root.zig");
 
 
+// const AESFactory = struct {
+//     ptr: *const fn (key: []const u8) *AES,
+//     build: *const fn (key: *const [umac.KEY_LEN]u8) AES,
+// };
+
+fn getSliceFromPyBytes(obj: [*c]py.PyObject) ?[]const u8 {
+    var ptr: [*]u8 = undefined;
+    var size: isize = 0;
+
+    if (py.PyBytes_AsStringAndSize(obj, @ptrCast(&ptr), &size) != 0) return null;
+
+    return ptr[0..@intCast(size)];
+}
+
+
+// const CryptographyAES = struct {
+//     encryptor: [*c]py.PyObject,
+// };
+
+// fn CryptographyAESEncrypt(self: *CryptographyAES, block_in: *const [umac.BLOCK_LEN]u8, block_out: *[umac.BLOCK_LEN]u8) void {
+//     const input_bytes = py.PyBytes_FromStringAndSize(@ptrCast(block_in), umac.BLOCK_LEN) orelse @panic("Failed to create input bytes");
+//     defer py.Py_DECREF(input_bytes);
+
+//     const result_1 = py.PyObject_CallMethod(self.encryptor, "update", "O", input_bytes) orelse @panic("Failed to call update");
+//     defer py.Py_DECREF(result_1);
+
+//     const result_2 = py.PyObject_CallMethod(self.encryptor, "finalize", null) orelse @panic("Failed to call finalize");
+//     defer py.Py_DECREF(result_2);
+
+//     var result_1_size: isize = 0;
+//     var result_1_ptr: [*]u8 = undefined;
+
+//     if (py.PyBytes_AsStringAndSize(result_1, @ptrCast(&result_1_ptr), &result_1_size) != 0) @panic("Failed to get bytes data");
+//     // const result_2_ptr = py.PyBytes_AsString(result_2) orelse @panic("Failed to get bytes data");
+
+//     const chunk2 = getSliceFromPyBytes(result_2) orelse @panic("Failed to get bytes data");
+//     const split: usize = @intCast(result_1_size);
+
+//     @memcpy(block_out[0..split], result_1_ptr[0..split]);
+//     @memcpy(block_out[split..umac.BLOCK_LEN], chunk2[0..(umac.BLOCK_LEN - split)]);
+// }
+
+// fn CryptographyAESFree(self: *CryptographyAES) void {
+//     py.Py_DECREF(self.encryptor);
+//     py.PyMem_Free(self);
+// }
+
+
+// const CryptographyAESFactory = struct {
+//     aes_class: [*c]py.PyObject,
+// };
+
+// fn getCryptographyAES(key: *const [umac.KEY_LEN]u8) ?AESInterface {
+//     const algorithms_module = py.PyImport_ImportModule("cryptography.hazmat.primitives.ciphers.algorithms") orelse return null;
+//     defer py.Py_DECREF(algorithms_module);
+
+//     const aes_class = py.PyObject_GetAttrString(algorithms_module, "AES") orelse return null;
+//     defer py.Py_DECREF(aes_class);
+
+//     const ciphers_module = py.PyImport_ImportModule("cryptography.hazmat.primitives.ciphers") orelse return null;
+//     defer py.Py_DECREF(ciphers_module);
+
+//     const cipher_class = py.PyObject_GetAttrString(ciphers_module, "Cipher") orelse return null;
+//     defer py.Py_DECREF(cipher_class);
+
+//     const modes_module = py.PyImport_ImportModule("cryptography.hazmat.primitives.ciphers.modes") orelse return null;
+//     defer py.Py_DECREF(modes_module);
+
+//     const ecb_class = py.PyObject_GetAttrString(modes_module, "ECB") orelse return null;
+//     defer py.Py_DECREF(ecb_class);
+
+//     const aes_instance = py.PyObject_CallFunctionObjArgs(
+//         aes_class,
+//         py.PyBytes_FromStringAndSize(@ptrCast(key), umac.KEY_LEN),
+//         @as([*c]const u8, null),
+//     ) orelse @panic("Failed to create instance");
+
+//     const ecb_instance = py.PyObject_CallFunctionObjArgs(
+//         ecb_class,
+//         @as([*c]const u8, null),
+//     ) orelse return null;
+
+//     const cipher_instance = py.PyObject_CallFunctionObjArgs(
+//         cipher_class,
+//         aes_instance,
+//         ecb_instance,
+//         @as([*c]const u8, null),
+//     ) orelse return null;
+
+//     // End of factory
+
+//     const encryptor = py.PyObject_CallMethod(cipher_instance, "encryptor", null) orelse return null;
+
+//     const aes: *CryptographyAES = @ptrCast(@alignCast(py.PyMem_Malloc(@sizeOf(CryptographyAES))));
+//     aes.*.encryptor = encryptor;
+
+//     return AESInterface{
+//         .ptr = aes,
+//         .encrypt = @ptrCast(&CryptographyAESEncrypt),
+//         .free = @ptrCast(&CryptographyAESFree),
+//     };
+// }
+
+
+// const CryptographyEncryptor = struct { };
+
+
 fn createModuleDef(name: []const u8) py.PyModuleDef {
     return .{
         // See: https://github.com/python/cpython/blob/3.14/Include/moduleobject.h#L60
@@ -29,7 +136,7 @@ var module_def = createModuleDef("umac");
 
 const UMAC = struct {
     ob_base: py.PyObject,
-    umac: umac.Umac(4),
+    umac: umac.Umac(umac.OpenSSLEncryptor, 4),
 };
 
 var umac_methods = [_]py.PyMethodDef{
@@ -114,7 +221,7 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
     const obj = py.PyType_GenericNew(@ptrCast(umac_type), null, null) orelse return null;
 
     const self: *UMAC = @ptrCast(obj);
-    self.umac = umac.Umac(4).init(key[0..umac.KEY_LEN], nonce);
+    self.umac = umac.Umac(umac.OpenSSLEncryptor, 4).init(key[0..umac.KEY_LEN], nonce);
 
     return obj;
 }

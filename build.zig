@@ -36,7 +36,9 @@ pub fn build(b: *std.Build) !void {
         .target = target,
     });
 
-    python_library_module.linkSystemLibrary("openssl", .{});
+    python_library_module.linkSystemLibrary("openssl", .{
+        .preferred_link_mode = .static,
+    });
 
 
     const find_python_stdout = try runCommand(allocator, &[_][]const u8{"uv", "python", "find", "3.14"});

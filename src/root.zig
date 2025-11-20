@@ -10,7 +10,7 @@ pub const BLOCK_LEN = 16; // At least 16 and a power of two
 pub const KEY_LEN = 16; // 16, 24 or 32
 
 
-const OpenSSLEncryptor = struct {
+pub const OpenSSLEncryptor = struct {
     const Self = @This();
 
     aes_key: openssl.AES_KEY,
@@ -29,7 +29,6 @@ const OpenSSLEncryptor = struct {
         }
     }
 };
-
 
 
 const L1_PAD_BOUNDARY = 32;
