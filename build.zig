@@ -5,7 +5,6 @@ const mem = std.mem;
 fn runCommand(alloc: mem.Allocator, args: []const []const u8) std.process.Child.RunError![]u8 {
     const result = try std.process.Child.run(.{
         .allocator = alloc,
-        // .argv = &[_][]const u8{"uv", "python", "dir"},
         .argv = args,
     });
 
@@ -27,17 +26,11 @@ pub fn build(b: *std.Build) !void {
         .target = target,
     });
 
-    library_module.linkSystemLibrary("openssl", .{});
-
 
     const python_library_module_name = "umac_python";
     const python_library_module = b.addModule(python_library_module_name, .{
         .root_source_file = b.path("src/python.zig"),
         .target = target,
-    });
-
-    python_library_module.linkSystemLibrary("openssl", .{
-        .preferred_link_mode = .static,
     });
 
 
@@ -70,8 +63,6 @@ pub fn build(b: *std.Build) !void {
             .{ .name = library_module_name, .module = library_module },
         },
     });
-
-    executable_module.linkSystemLibrary("openssl", .{});
 
 
     const executable = b.addExecutable(.{
