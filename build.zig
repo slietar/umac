@@ -45,8 +45,6 @@ pub fn build(b: *std.Build) !void {
         },
     };
 
-    const optimize = b.standardOptimizeOption(.{});
-
     for (target_specs) |target_spec| {
         const target = target_spec.target;
 
@@ -57,9 +55,8 @@ pub fn build(b: *std.Build) !void {
         // });
 
 
-        const python_library_module_name = "umac_python";
-        const python_library_module = b.addModule(python_library_module_name, .{
-            .optimize = optimize,
+        const python_library_module = b.createModule(.{
+            .optimize = .ReleaseSmall,
             .root_source_file = b.path("src/python.zig"),
             .target = target,
         });
@@ -94,12 +91,17 @@ pub fn build(b: *std.Build) !void {
     }
 
 
-    // const mod_tests = b.addTest(.{
-    //     .root_module = library_module,
-    // });
+    const test_module = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = b.standardTargetOptions(.{}),
+    });
 
-    // const run_mod_tests = b.addRunArtifact(mod_tests);
+    const mod_tests = b.addTest(.{
+        .root_module = test_module,
+    });
 
-    // const test_step = b.step("test", "Run tests");
-    // test_step.dependOn(&run_mod_tests.step);
+    const run_mod_tests = b.addRunArtifact(mod_tests);
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_mod_tests.step);
 }
