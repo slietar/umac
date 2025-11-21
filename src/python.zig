@@ -68,12 +68,12 @@ fn repr(obj: [*c]py.PyObject) void {
 }
 
 fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callconv(.c) [*c]py.PyObject {
-    var tag_len_bits: u8 = undefined;
+    var tag_len: u8 = undefined;
     var nonce_buffer: py.Py_buffer = undefined;
     var key_buffer: py.Py_buffer = undefined;
 
     const keywords = [_][*c]const u8{
-        "size",
+        "digest_size",
         "key",
         "nonce",
         null,
@@ -85,7 +85,7 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
             kwargs,
             "by*y*",
             @ptrCast(&keywords),
-            &tag_len_bits,
+            &tag_len,
             &key_buffer,
             &nonce_buffer,
         ) == 0
@@ -97,8 +97,8 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
     const nonce_ptr: [*]const u8 = @ptrCast(nonce_buffer.buf);
     const nonce = nonce_ptr[0..@intCast(nonce_buffer.len)];
 
-    if (tag_len_bits != 32 and tag_len_bits != 64 and tag_len_bits != 96 and tag_len_bits != 128) {
-        py.PyErr_SetString(py.PyExc_ValueError, "Invalid tag size. Must be one of 32, 64, 96, 128.");
+    if (tag_len != 4 and tag_len != 8 and tag_len != 12 and tag_len != 16) {
+        py.PyErr_SetString(py.PyExc_ValueError, "Invalid digest size");
         py.PyBuffer_Release(&nonce_buffer);
         py.PyBuffer_Release(&key_buffer);
         return null;
@@ -117,9 +117,6 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
         py.PyBuffer_Release(&key_buffer);
         return null;
     }
-
-    const tag_len = @divExact(tag_len_bits, 8);
-    _ = tag_len;
 
     const obj = py.PyType_GenericNew(@ptrCast(umac_type), null, null) orelse return null;
 

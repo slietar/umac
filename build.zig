@@ -48,13 +48,6 @@ pub fn build(b: *std.Build) !void {
     for (target_specs) |target_spec| {
         const target = target_spec.target;
 
-        // const library_module_name = "umac";
-        // const library_module = b.addModule(library_module_name, .{
-        //     .root_source_file = b.path("src/root.zig"),
-        //     .target = target,
-        // });
-
-
         const python_library_module = b.createModule(.{
             .optimize = .ReleaseSmall,
             .root_source_file = b.path("src/python.zig"),

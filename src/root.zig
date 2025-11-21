@@ -10,6 +10,12 @@ const L1_PAD_BOUNDARY = 32;
 const L1_KEY_LEN = 1024;
 
 
+// Input:
+//   K, string of length KEYLEN bytes.
+//   index, a non-negative integer less than 2^64.
+//   numbytes, a non-negative integer less than 2^64.
+// Output:
+//   Y, string of length numbytes bytes.
 fn kdf(encryptor: *Encryptor, index: u8, output: []u8) void {
     const iter_count = std.math.divCeil(u32, @intCast(output.len), BLOCK_LEN) catch unreachable;
 
@@ -199,13 +205,10 @@ fn l2(k: *const [24]u8, m: []const u8, output: *[16]u8) void {
     if (m.len <= boundary) {
         const y = poly(u64, (1 << 64) - (1 << 32), k64, m);
         @memset(output[0..8], 0);
-        std.mem.writeInt(u64, output[8..16], y, .big); // TODO: Not sure
-        // std.debug.print("!!!! small {d}\n", .{y});
+        std.mem.writeInt(u64, output[8..16], y, .big);
     } else {
         const rest = m.len - boundary;
         const m_1 = m[0..boundary];
-        // std.debug.print("L2 rest {d}\n", .{rest});
-
         const y1 = poly(u64, (1 << 64) - (1 << 32), k64, m_1);
 
         // Prefix (16) + M_2 (rest) + 0x80 (1) + padding
