@@ -1,0 +1,39 @@
+# on:
+#   push:
+#     tags:
+#       - '*'
+
+on:
+  - push
+
+jobs:
+  pypi-publish:
+    name: Upload release to PyPI
+    runs-on: ubuntu-latest
+    # environment:
+    #   name: pypi
+    #   url: https://pypi.org/p/umac
+    permissions:
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Install Python
+        run: uv python install 3.14
+      - name: Run tests
+        run: zig build test
+      - name: Build project
+        run: zig build
+      - name: Build package distributions
+        run: uv build --wheel
+        working-directory: python
+      # - name: Publish package distributions to PyPI
+      #   uses: pypa/gh-action-pypi-publish@release/v1
+      #   with:
+      #     packages-dir: python/dist
