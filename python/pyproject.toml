@@ -4,7 +4,7 @@ build-backend = "oryn"
 
 [project]
 name = "umac"
-version = "0.0"
+version = "1.0"
 description = "Implementation of the UMAC algorithm defined by RFC 4418"
 license = "EUPL-1.2"
 readme = "readme.md"
