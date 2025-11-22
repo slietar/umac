@@ -1,6 +1,6 @@
 # UMAC
 
-This project is a Python implementation of the UMAC algorithm defined by RFC 4418.
+This Python package provides an implementation of the UMAC algorithm defined by RFC 4418.
 
 It supports Python 3.11 and later.
 
