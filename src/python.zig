@@ -39,7 +39,7 @@ var module_def = createModuleDef("umac");
 
 const UMAC = struct {
     ob_base: py.PyObject,
-    umac: umac.Umac(4),
+    umac: umac.Umac,
 };
 
 var umac_methods = [_]py.PyMethodDef{
@@ -121,7 +121,7 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
     const obj = py.PyType_GenericNew(@ptrCast(umac_type), null, null) orelse return null;
 
     const self: *UMAC = @ptrCast(obj);
-    self.umac = umac.Umac(4).init(key[0..umac.KEY_LEN], nonce);
+    self.umac = umac.Umac.init(tag_len, key[0..umac.KEY_LEN], nonce);
 
     return obj;
 }
@@ -153,8 +153,10 @@ fn UMACUpdate(instance: [*c]py.PyObject, args: [*c]py.PyObject, kwargs: [*c]py.P
 fn UMACDigest(instance: [*c]py.PyObject, _: [*c]py.PyObject) callconv(.c) [*c]py.PyObject {
     const self: *UMAC = @ptrCast(instance);
 
-    const tag = self.umac.finish();
-    return py.PyBytes_FromStringAndSize(@ptrCast(&tag), tag.len) orelse return null;
+    const digest = py.PyBytes_FromStringAndSize(null, @intCast(self.umac.tag_len)) orelse return null;
+    self.umac.finish(py.PyBytes_AsString(digest));
+
+    return digest;
 }
 
 var umac_type_slots = [_]py.PyType_Slot{

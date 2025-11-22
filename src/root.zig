@@ -4,6 +4,7 @@ const Encryptor = std.crypto.core.aes.AesEncryptCtx(std.crypto.core.aes.Aes128);
 
 pub const BLOCK_LEN = 16; // At least 16 and a power of two
 pub const KEY_LEN = 16; // 16, 24 or 32
+pub const MAX_TAG_LEN = 16;
 
 
 const L1_PAD_BOUNDARY = 32;
@@ -261,7 +262,7 @@ fn uhash(key_encryptor: *Encryptor, m: []const u8, output: []u8) void {
     const tag_len = output.len;
 
     const iter_count = @divExact(tag_len, 4);
-    const max_iter_count: comptime_int = @divExact(16, 4);
+    const max_iter_count: comptime_int = @divExact(MAX_TAG_LEN, 4);
 
     var l1_key: [L1_KEY_LEN + (max_iter_count - 1) * 16]u8 = undefined;
     var l2_key: [max_iter_count * 24]u8 = undefined;
@@ -337,55 +338,52 @@ fn umac(key: *const [KEY_LEN]u8, m: []const u8, nonce: []const u8, output: []u8)
 }
 
 
-pub fn Umac(tag_len: comptime_int) type {
-    return struct {
-        const Self = @This();
+pub const Umac = struct {
+    const Self = @This();
 
-        data: []u8,
+    data: []u8,
+    key: *const [KEY_LEN]u8,
+    nonce: []const u8,
+    tag_len: usize,
+
+    pub fn init(tag_len: usize, key: *const [KEY_LEN]u8, nonce: []const u8) Self {
+        return Self{
+            .data = &[0]u8{},
+            .key = key,
+            .nonce = nonce,
+            .tag_len = tag_len,
+        };
+    }
+
+    pub fn update(self: *Self, chunk: []const u8) void {
+        var allocator = std.heap.page_allocator;
+        var new_data = allocator.alloc(u8, self.data.len + chunk.len) catch unreachable;
+
+        @memcpy(new_data[0..self.data.len], self.data);
+        @memcpy(new_data[self.data.len..], chunk);
+
+        allocator.free(self.data);
+        self.data = new_data;
+    }
+
+    pub fn finish(self: *Self, output: [*]u8) void {
+        var allocator = std.heap.page_allocator;
+        umac(self.key, self.data, self.nonce, output[0..self.tag_len]);
+        allocator.free(self.data);
+    }
+
+    pub fn compute(
         key: *const [KEY_LEN]u8,
         nonce: []const u8,
+        message: []const u8,
+        output: []u8,
+    ) void {
+        var instance = Self.init(output.len, key, nonce);
 
-        pub fn init(key: *const [KEY_LEN]u8, nonce: []const u8) Self {
-            return Self{
-                .data = &[0]u8{},
-                .key = key,
-                .nonce = nonce,
-            };
-        }
-
-        pub fn update(self: *Self, chunk: []const u8) void {
-            var allocator = std.heap.page_allocator;
-            var new_data = allocator.alloc(u8, self.data.len + chunk.len) catch unreachable;
-
-            @memcpy(new_data[0..self.data.len], self.data);
-            @memcpy(new_data[self.data.len..], chunk);
-
-            allocator.free(self.data);
-            self.data = new_data;
-        }
-
-        pub fn finish(self: *Self) [tag_len]u8 {
-            var output: [tag_len]u8 = undefined;
-            var allocator = std.heap.page_allocator;
-            umac(self.key, self.data, self.nonce, &output);
-            allocator.free(self.data);
-            self.data = &[0]u8{};
-
-            return output;
-        }
-
-        pub fn compute(
-            key: *const [KEY_LEN]u8,
-            nonce: []const u8,
-            message: []const u8,
-        ) [tag_len]u8 {
-            var instance = Self.init(key, nonce);
-            instance.update(message);
-
-            return instance.finish();
-        }
-    };
-}
+        instance.update(message);
+        instance.finish(output.ptr);
+    }
+};
 
 
 test "umac" {
@@ -454,7 +452,7 @@ test "umac" {
             var tag: [tag_len]u8 = undefined;
 
             if (message_len > CHUNK_LEN) {
-                var instance = Umac(tag_len).init(key, nonce);
+                var instance = Umac.init(tag_len, key, nonce);
                 var repeat_index: usize = 0;
 
                 while (repeat_index < test_case.repeat) {
@@ -471,7 +469,7 @@ test "umac" {
                     instance.update(chunk[0..(chunk_repeat_count * part_len)]);
                 }
 
-                tag = instance.finish();
+                instance.finish(&tag);
             } else {
                 for (0..test_case.repeat) |repeat_index| {
                     @memcpy(
@@ -480,7 +478,7 @@ test "umac" {
                     );
                 }
 
-                tag = Umac(tag_len).compute(key, nonce, chunk[0..message_len]);
+                Umac.compute(key, nonce, chunk[0..message_len], &tag);
             }
 
             var expected_tag: [tag_len]u8 = undefined;
