@@ -84,9 +84,28 @@ pub fn build(b: *std.Build) !void {
     }
 
 
+    const standard_target = b.standardTargetOptions(.{});
+
+    const benchmark_module = b.createModule(.{
+        .optimize = .ReleaseFast,
+        .root_source_file = b.path("src/benchmark.zig"),
+        .target = standard_target,
+    });
+
+    const benchmark_exe = b.addExecutable(.{
+        .name = "benchmark",
+        .root_module = benchmark_module,
+    });
+
+    const benchmark_artifact = b.addRunArtifact(benchmark_exe);
+
+    const benchmark_step = b.step("benchmark", "Run benchmark");
+    benchmark_step.dependOn(&benchmark_artifact.step);
+
+
     const test_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
-        .target = b.standardTargetOptions(.{}),
+        .target = standard_target,
     });
 
     const mod_tests = b.addTest(.{
