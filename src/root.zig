@@ -430,17 +430,17 @@ const Stream = struct {
         for (0..chunk_count) |chunk_index| {
             var target: *const [L1_KEY_LEN]u8 = undefined;
 
-            if (chunk_index == 0 and self.message_buffer_len != 0) {
+            if (self.message_buffer_len == 0) {
+                target = message_chunk[(chunk_index * L1_KEY_LEN)..][0..L1_KEY_LEN];
+            } else if (chunk_index > 0) {
+                target = message_chunk[(L1_KEY_LEN - self.message_buffer_len + (chunk_index - 1) * L1_KEY_LEN)..][0..L1_KEY_LEN];
+            } else {
                 @memcpy(
                     self.message_buffer[self.message_buffer_len..],
                     message_chunk[0..(L1_KEY_LEN - self.message_buffer_len)],
                 );
 
                 target = &self.message_buffer;
-            } else {
-                target = message_chunk[
-                    ((L1_KEY_LEN - self.message_buffer_len) + (chunk_index - 1) * L1_KEY_LEN)..
-                ][0..L1_KEY_LEN];
             }
 
             const word = nh(self.l1_key, target) +% (L1_KEY_LEN << 3);
