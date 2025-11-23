@@ -37,9 +37,10 @@ fn createModuleDef(name: []const u8) py.PyModuleDef {
 var module_def = createModuleDef("umac");
 
 
-const UMAC = struct {
+const UMAC = extern struct {
     ob_base: py.PyObject,
     umac: umac.Umac,
+    tag_len: u8,
 };
 
 var umac_methods = [_]py.PyMethodDef{
@@ -91,6 +92,9 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
         ) == 0
     ) return null;
 
+    defer py.PyBuffer_Release(&nonce_buffer);
+    defer py.PyBuffer_Release(&key_buffer);
+
     const key_ptr: [*]const u8 = @ptrCast(key_buffer.buf);
     const key = key_ptr[0..@intCast(key_buffer.len)];
 
@@ -99,31 +103,29 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
 
     if (tag_len != 4 and tag_len != 8 and tag_len != 12 and tag_len != 16) {
         py.PyErr_SetString(py.PyExc_ValueError, "Invalid digest size");
-        py.PyBuffer_Release(&nonce_buffer);
-        py.PyBuffer_Release(&key_buffer);
         return null;
     }
 
     if (key.len != umac.KEY_LEN) {
         py.PyErr_SetString(py.PyExc_ValueError, std.fmt.comptimePrint("Invalid key length, must be {d}", .{umac.KEY_LEN}));
-        py.PyBuffer_Release(&nonce_buffer);
-        py.PyBuffer_Release(&key_buffer);
         return null;
     }
 
     if (nonce.len <= 0 or nonce.len > umac.BLOCK_LEN) {
         py.PyErr_SetString(py.PyExc_ValueError, std.fmt.comptimePrint("Invalid nonce length, must be between 1 and {} included", .{umac.BLOCK_LEN}));
-        py.PyBuffer_Release(&nonce_buffer);
-        py.PyBuffer_Release(&key_buffer);
         return null;
     }
 
-    const obj = py.PyType_GenericNew(@ptrCast(umac_type), null, null) orelse return null;
+    const alloc = py.PyType_GetSlot(@ptrCast(umac_type), py.Py_tp_alloc);
+    const alloc_fn: *fn (*anyopaque, py.Py_ssize_t) callconv(.c) [*c]py.PyObject = @alignCast(@ptrCast(alloc));
 
-    const self: *UMAC = @ptrCast(obj);
+    const instance = alloc_fn(@ptrCast(umac_type), 0) orelse return null;
+    const self: *UMAC = @alignCast(@ptrCast(instance));
+
     self.umac = umac.Umac.init(tag_len, key[0..umac.KEY_LEN], nonce);
+    self.tag_len = tag_len;
 
-    return obj;
+    return instance;
 }
 
 fn UMACUpdate(instance: [*c]py.PyObject, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callconv(.c) [*c]py.PyObject {
@@ -144,16 +146,16 @@ fn UMACUpdate(instance: [*c]py.PyObject, args: [*c]py.PyObject, kwargs: [*c]py.P
     const part_ptr: [*]const u8 = @ptrCast(part_buffer.buf);
     const part = part_ptr[0..@intCast(part_buffer.len)];
 
-    const self: *UMAC = @ptrCast(instance);
+    const self: *UMAC = @alignCast(@ptrCast(instance));
     self.umac.update(part);
 
     return py.Py_None();
 }
 
 fn UMACDigest(instance: [*c]py.PyObject, _: [*c]py.PyObject) callconv(.c) [*c]py.PyObject {
-    const self: *UMAC = @ptrCast(instance);
+    const self: *UMAC = @alignCast(@ptrCast(instance));
 
-    const digest = py.PyBytes_FromStringAndSize(null, @intCast(self.umac.tag_len)) orelse return null;
+    const digest = py.PyBytes_FromStringAndSize(null, @intCast(self.tag_len)) orelse return null;
     self.umac.finish(py.PyBytes_AsString(digest));
 
     return digest;
@@ -178,7 +180,6 @@ var umac_type: *anyopaque = undefined;
 
 export fn PyInit_umac() [*c]py.PyObject {
     umac_type = py.PyType_FromSpec(&umac_type_spec) orelse return null;
-    if (py.PyType_Ready(@ptrCast(umac_type)) < 0) return null;
 
     const module = py.PyModule_Create(&module_def) orelse return null;
 

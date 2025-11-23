@@ -137,7 +137,7 @@ fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
 }
 
 
-const Stream = struct {
+const Stream = extern struct {
     const Self = @This();
 
     l1_key: *const [L1_KEY_LEN]u8,
@@ -286,7 +286,7 @@ const Stream = struct {
 
 const MAX_STREAM_COUNT = @divExact(MAX_TAG_LEN, 4);
 
-pub const Umac = struct {
+pub const Umac = extern struct {
     const Self = @This();
 
     pad: [MAX_TAG_LEN]u8 = undefined,
