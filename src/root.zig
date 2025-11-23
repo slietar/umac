@@ -342,13 +342,18 @@ pub const Umac = struct {
     const Self = @This();
 
     data: []u8,
+    data_len: usize,
     key: *const [KEY_LEN]u8,
     nonce: []const u8,
     tag_len: usize,
 
     pub fn init(tag_len: usize, key: *const [KEY_LEN]u8, nonce: []const u8) Self {
+        var allocator = std.heap.page_allocator;
+        const data = allocator.alloc(u8, 1 << 26) catch unreachable;
+
         return Self{
-            .data = &[0]u8{},
+            .data = data,
+            .data_len = 0,
             .key = key,
             .nonce = nonce,
             .tag_len = tag_len,
@@ -356,19 +361,14 @@ pub const Umac = struct {
     }
 
     pub fn update(self: *Self, chunk: []const u8) void {
-        var allocator = std.heap.page_allocator;
-        var new_data = allocator.alloc(u8, self.data.len + chunk.len) catch unreachable;
-
-        @memcpy(new_data[0..self.data.len], self.data);
-        @memcpy(new_data[self.data.len..], chunk);
-
-        allocator.free(self.data);
-        self.data = new_data;
+        @memcpy(self.data[self.data_len..][0..chunk.len], chunk);
+        self.data_len += chunk.len;
     }
 
     pub fn finish(self: *Self, output: [*]u8) void {
+        umac(self.key, self.data[0..self.data_len], self.nonce, output[0..self.tag_len]);
+
         var allocator = std.heap.page_allocator;
-        umac(self.key, self.data, self.nonce, output[0..self.tag_len]);
         allocator.free(self.data);
     }
 
@@ -384,6 +384,187 @@ pub const Umac = struct {
         instance.finish(output.ptr);
     }
 };
+
+
+const Stream = struct {
+    const Self = @This();
+
+    l1_key: *const [L1_KEY_LEN]u8,
+    l2_k64: u128,
+    l2_k128: u128, // Using u128 to avoid later cast
+    l2_y: u64,
+    l3_key1: *const [64]u8,
+    l3_key2: *const [4]u8,
+
+    chunk_count: usize = 0,
+    message_buffer: [L1_KEY_LEN]u8 = undefined,
+    message_buffer_len: usize = 0,
+
+    pub fn init(
+        l1_key: *const [L1_KEY_LEN]u8,
+        l2_key: *const [24]u8,
+        l3_key1: *const [64]u8,
+        l3_key2: *const [4]u8,
+    ) Self {
+        const mask_32 = (1 << 25) - 1;
+        const mask_64 = (mask_32 << 32) + mask_32;
+        const mask_128 = (mask_64 << 64) + mask_64;
+
+        const k64 = std.mem.readInt(u64, l2_key[0..8], .big) & mask_64;
+        const k128 = std.mem.readInt(u128, l2_key[8..24], .big) & mask_128;
+
+        return Self{
+            .l1_key = l1_key,
+            .l2_k64 = @intCast(k64),
+            .l2_k128 = k128,
+            .l2_y = 1,
+            .l3_key1 = l3_key1,
+            .l3_key2 = l3_key2,
+        };
+    }
+
+    pub fn update(self: *Self, message_chunk: []const u8) void {
+        const chunk_count = @divFloor(self.message_buffer_len + message_chunk.len, L1_KEY_LEN);
+
+        for (0..chunk_count) |chunk_index| {
+            var target: *const [L1_KEY_LEN]u8 = undefined;
+
+            if (chunk_index == 0 and self.message_buffer_len != 0) {
+                @memcpy(
+                    self.message_buffer[self.message_buffer_len..],
+                    message_chunk[0..(L1_KEY_LEN - self.message_buffer_len)],
+                );
+
+                target = &self.message_buffer;
+            } else {
+                target = message_chunk[
+                    ((L1_KEY_LEN - self.message_buffer_len) + (chunk_index - 1) * L1_KEY_LEN)..
+                ][0..L1_KEY_LEN];
+            }
+
+            const word = nh(self.l1_key, target) +% (L1_KEY_LEN << 3);
+            self.run_l2(word);
+
+            self.chunk_count += 1;
+        }
+
+        self.message_buffer_len = (self.message_buffer_len + message_chunk.len) % L1_KEY_LEN;
+
+        if (chunk_count == 0) {
+            @memcpy(
+                self.message_buffer[(self.message_buffer_len - message_chunk.len)..self.message_buffer_len],
+                message_chunk,
+            );
+        } else {
+            @memcpy(
+                self.message_buffer[0..self.message_buffer_len],
+                message_chunk[(message_chunk.len - self.message_buffer_len)..],
+            );
+        }
+    }
+
+    fn run_l2(self: *Self, word: u64) void {
+        if (self.chunk_count == 0) {
+            self.l2_y = @intCast(word);
+        } else {
+            if (self.chunk_count == 1) {
+                self.l2_y = @intCast((self.l2_k64 + self.l2_y) % PRIME_64);
+            }
+
+            self.l2_y = @intCast((self.l2_k64 * self.l2_y + @as(u128, word)) % PRIME_64);
+        }
+    }
+
+    pub fn finish(self: *Self) [4]u8 {
+        if (self.message_buffer_len > 0 or self.chunk_count == 0) {
+            const padded_chunk_size = @max(1, std.math.divCeil(usize, self.message_buffer_len, L1_PAD_BOUNDARY) catch unreachable) * L1_PAD_BOUNDARY;
+            @memset(self.message_buffer[self.message_buffer_len..padded_chunk_size], 0);
+
+            const word = nh(self.l1_key, self.message_buffer[0..padded_chunk_size]) +% (self.message_buffer_len << 3);
+            self.run_l2(word);
+        }
+
+        var l2_output: [16]u8 = undefined;
+        std.mem.writeInt(u128, &l2_output, self.l2_y, .big);
+
+        const iter_result = l3(
+            self.l3_key1,
+            std.mem.readInt(u32, self.l3_key2, .big),
+            &l2_output,
+        );
+
+        var output: [4]u8 = undefined;
+        std.mem.writeInt(u32, &output, iter_result, .big);
+
+        return output;
+    }
+};
+
+
+const MAX_STREAM_COUNT = @divExact(MAX_TAG_LEN, 4);
+
+pub const StreamedUmac = struct {
+    const Self = @This();
+
+    pad: [MAX_TAG_LEN]u8 = undefined,
+    streams: [MAX_STREAM_COUNT]Stream = undefined,
+    stream_count: usize,
+
+    l1_key: [L1_KEY_LEN + (MAX_STREAM_COUNT - 1) * 16]u8 = undefined,
+    l2_key: [MAX_STREAM_COUNT * 24]u8 = undefined,
+    l3_key1: [MAX_STREAM_COUNT * 64]u8 = undefined,
+    l3_key2: [MAX_STREAM_COUNT * 4]u8 = undefined,
+
+    pub fn init(tag_len: usize, key: *const [KEY_LEN]u8, nonce: []const u8) Self {
+        const stream_count = @divExact(tag_len, 4);
+
+        var self = Self{
+            .stream_count = stream_count,
+        };
+
+        var key_encryptor = Encryptor.init(key.*);
+
+        kdf(&key_encryptor, 1, self.l1_key[0..(L1_KEY_LEN + (stream_count - 1) * 16)]);
+        kdf(&key_encryptor, 2, self.l2_key[0..(stream_count * 24)]);
+        kdf(&key_encryptor, 3, self.l3_key1[0..(stream_count * 64)]);
+        kdf(&key_encryptor, 4, self.l3_key2[0..(stream_count * 4)]);
+
+        for (0..stream_count) |stream_index| {
+            self.streams[stream_index] = Stream.init(
+                self.l1_key[(stream_index * 16)..][0..L1_KEY_LEN],
+                self.l2_key[(stream_index * 24)..][0..24],
+                self.l3_key1[(stream_index * 64)..][0..64],
+                self.l3_key2[(stream_index * 4)..][0..4],
+            );
+        }
+
+        pdf(&key_encryptor, nonce, self.pad[0..tag_len]);
+
+        return self;
+    }
+
+    pub fn update(self: *Self, message_chunk: []const u8) void {
+        for (self.streams[0..self.stream_count]) |*stream| {
+            stream.update(message_chunk);
+        }
+    }
+
+    pub fn finish(self: *Self, output: [*]u8) void {
+        for (0.., self.streams[0..self.stream_count]) |stream_index, *stream| {
+            const stream_output: [4]u8 = stream.finish();
+
+            @memcpy(
+                output[(stream_index * 4)..][0..4],
+                &stream_output,
+            );
+        }
+
+        for (0..(self.stream_count * 4)) |index| {
+            output[index] ^= self.pad[index];
+        }
+    }
+};
+
 
 
 test "umac" {
@@ -422,11 +603,11 @@ test "umac" {
             .repeat = 1 << 20,
             .expected = .{"DB6364D1", "A4477E87E9F55853", "F8ACFA3AC31CFEEA047F7B11"},
         },
-        // .{
-        //     .part = "a",
-        //     .repeat = 1 << 25,
-        //     .expected = .{"5109A660", "2E2DBC36860A0A5F", "72C6388BACE3ACE6FBF062D9"},
-        // },
+        .{
+            .part = "a",
+            .repeat = 1 << 25,
+            .expected = .{"5109A660", "2E2DBC36860A0A5F", "72C6388BACE3ACE6FBF062D9"},
+        },
         .{
             .part = "abc",
             .repeat = 1,
@@ -439,47 +620,16 @@ test "umac" {
         },
     };
 
-
-    // This constant must be at least as large as the largest nonrepeated message
-    const CHUNK_LEN = (1 << 10) + (1 << 9);
-
     for (test_cases) |test_case| {
         inline for (.{4, 8, 12}, 0..) |tag_len, tag_len_index| {
-            const part_len = test_case.part.len;
-            const message_len = part_len * test_case.repeat;
-
-            var chunk: [CHUNK_LEN]u8 = undefined;
             var tag: [tag_len]u8 = undefined;
+            var instance = StreamedUmac.init(tag_len, key, nonce);
 
-            if (message_len > CHUNK_LEN) {
-                var instance = Umac.init(tag_len, key, nonce);
-                var repeat_index: usize = 0;
-
-                while (repeat_index < test_case.repeat) {
-                    const chunk_repeat_count = @min(@divFloor(CHUNK_LEN, part_len), test_case.repeat - repeat_index);
-                    repeat_index += chunk_repeat_count;
-
-                    for (0..chunk_repeat_count) |chunk_repeat_index| {
-                        @memcpy(
-                            chunk[(chunk_repeat_index * part_len)..][0..part_len],
-                            test_case.part,
-                        );
-                    }
-
-                    instance.update(chunk[0..(chunk_repeat_count * part_len)]);
-                }
-
-                instance.finish(&tag);
-            } else {
-                for (0..test_case.repeat) |repeat_index| {
-                    @memcpy(
-                        chunk[(repeat_index * test_case.part.len)..][0..test_case.part.len],
-                        test_case.part,
-                    );
-                }
-
-                Umac.compute(key, nonce, chunk[0..message_len], &tag);
+            for (0..test_case.repeat) |_| {
+                instance.update(test_case.part);
             }
+
+            instance.finish(&tag);
 
             var expected_tag: [tag_len]u8 = undefined;
             _ = try std.fmt.hexToBytes(&expected_tag, test_case.expected[tag_len_index]);
