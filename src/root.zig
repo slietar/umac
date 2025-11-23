@@ -90,14 +90,40 @@ fn pdf(key_encryptor: *Encryptor, nonce: []const u8, output: []u8) void {
 // Output:
 //   Y, string of length 8 bytes.
 fn nh(k: *const [L1_KEY_LEN]u8, m: []const u8) u64 {
-    const chunk_count = @divExact(m.len, 4);
     var y: u64 = 0;
+    var pos: usize = 0;
 
-    var chunk_index: usize = 0;
+    while (pos < m.len) : (pos += 32) {
+        // Vectorized implementation 1
 
-    while (chunk_index < chunk_count) : (chunk_index += 8) {
+        // const m1: @Vector(8, u32) = @bitCast(m[pos..][0..32].*);
+        // const k1: @Vector(8, u32) = @bitCast(k[pos..][0..32].*);
+
+        // const mk: [8]u32 = m1 +% k1;
+        // const mk1: @Vector(4, u32) = mk[0..4].*;
+        // const mk2: @Vector(4, u32) = mk[4..8].*;
+
+        // const x = @as(@Vector(4, u64), mk1) *% @as(@Vector(4, u64), mk2);
+        // y +%= @reduce(.Add, x);
+
+
+        // Vectorized implementation 2
+
+        // const m1: @Vector(4, u32) = @bitCast(m[pos..][0..16].*);
+        // const m2: @Vector(4, u32) = @bitCast(m[(pos + 16)..][0..16].*);
+
+        // const k1: @Vector(4, u32) = @bitCast(k[pos..][0..16].*);
+        // const k2: @Vector(4, u32) = @bitCast(k[(pos + 16)..][0..16].*);
+
+        // const mk1 = @as(@Vector(4, u64), m1 +% k1);
+        // const mk2 = @as(@Vector(4, u64), m2 +% k2);
+
+        // const x = mk1 *% mk2;
+        // y +%= @reduce(.Add, x);
+
+
         for (0..4) |sub_index| {
-            const first_index = (chunk_index + sub_index) * 4;
+            const first_index = pos + sub_index * 4;
             const second_index = first_index + 4 * 4;
 
             const m_i = std.mem.readInt(u32, m[first_index..][0..4], .little);
