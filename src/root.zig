@@ -6,9 +6,11 @@ pub const BLOCK_LEN = 16; // At least 16 and a power of two
 pub const KEY_LEN = 16; // 16, 24 or 32
 pub const MAX_TAG_LEN = 16;
 
-
 const L1_PAD_BOUNDARY = 32;
 const L1_KEY_LEN = 1024;
+const L2_KEY_LEN = 24;
+const L3_KEY1_LEN = 64;
+const L3_KEY2_LEN = 4;
 
 
 // Input:
@@ -106,129 +108,12 @@ fn nh(k: *const [L1_KEY_LEN]u8, m: []const u8) u64 {
 }
 
 
-// Input:
-//   K, string of length 1024 bytes.
-//   M, string of length less than 2^67 bits.
-// Output:
-//   Y, string of length (8 * max(1, ceil(bytelength(M)/L1_KEY_LEN))) bytes.
-//
-fn l1(k: *const [L1_KEY_LEN]u8, m: []const u8, output: [*]u8) void {
-    const chunk_count = @max(std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable, 1);
-
-    for (0..chunk_count) |chunk_index| {
-        const start_index = chunk_index * L1_KEY_LEN;
-        const end_index = @min(start_index + L1_KEY_LEN, m.len);
-        const chunk_size = end_index - start_index;
-
-        var padded_chunk: []const u8 = undefined;
-
-        if (chunk_size == 0) {
-            // Not written in the RFC
-            padded_chunk = &[_]u8{0} ** L1_PAD_BOUNDARY;
-        } else if (chunk_size % L1_PAD_BOUNDARY != 0) {
-            const padded_chunk_size = (std.math.divCeil(usize, chunk_size, L1_PAD_BOUNDARY) catch unreachable) * L1_PAD_BOUNDARY;
-            var padded_chunk_buffer: [L1_KEY_LEN]u8 = undefined;
-
-            @memcpy(padded_chunk_buffer[0..chunk_size], m[start_index..end_index]);
-            @memset(padded_chunk_buffer[chunk_size..padded_chunk_size], 0);
-
-            padded_chunk = padded_chunk_buffer[0..padded_chunk_size];
-        } else {
-            padded_chunk = m[start_index..end_index];
-        }
-
-        std.mem.writeInt(
-            u64,
-            output[(chunk_index * 8)..][0..8],
-            nh(k, padded_chunk) +% (chunk_size << 3),
-            .big,
-        );
-    }
-}
-
-
 const OFFSET_64 = 59;
 const OFFSET_128 = 159;
 
 const PRIME_36: u64 = (1 << 36) - 5;
 const PRIME_64: u64 = (1 << 64) - OFFSET_64;
 const PRIME_128: u128 = (1 << 128) - OFFSET_128;
-
-
-// Input:
-//   wordbits, the integer 64 or 128.
-//   maxwordrange, positive integer less than 2^wordbits.
-//   k, integer in the range 0 ... prime(wordbits) - 1.
-//   M, string with length divisible by (wordbits / 8) bytes.
-// Output:
-//   y, integer in the range 0 ... prime(wordbits) - 1.
-fn poly(comptime word_type: anytype, max_word_range: word_type, k: word_type, m: []const u8) word_type {
-    const offset = if (word_type == u64) OFFSET_64 else OFFSET_128;
-    const prime: word_type = if (word_type == u64) PRIME_64 else PRIME_128;
-    const marker = prime - 1;
-
-    const word_size = @sizeOf(word_type);
-    const double_word_type = if (word_type == u64) u128 else u256;
-
-    var y: word_type = 1;
-
-    for (0..@divExact(m.len, word_size)) |word_index| {
-        const word = std.mem.readInt(word_type, m[(word_index * word_size)..][0..word_size], .big);
-
-        if (word >= max_word_range) {
-            y = (k * y + marker) % prime;
-            y = (k * y + (word - offset)) % prime;
-        } else {
-            // y = (k * y + word) % prime;
-            y = @intCast((@as(double_word_type, k) * @as(double_word_type, y) + @as(double_word_type, word)) % @as(double_word_type, prime));
-        }
-    }
-
-    return y;
-}
-
-
-// Input:
-//   K, string of length 24 bytes.
-//   M, string of length less than 2^64 bytes.
-// Output:
-//   Y, string of length 16 bytes.
-fn l2(k: *const [24]u8, m: []const u8, output: *[16]u8) void {
-    const mask_32 = (1 << 25) - 1;
-    const mask_64 = (mask_32 << 32) + mask_32;
-    const mask_128 = (mask_64 << 64) + mask_64;
-
-    const k64 = std.mem.readInt(u64, k[0..8], .big) & mask_64;
-    const k128 = std.mem.readInt(u128, k[8..24], .big) & mask_128;
-
-    const boundary = 1 << 17;
-
-    if (m.len <= boundary) {
-        const y = poly(u64, (1 << 64) - (1 << 32), k64, m);
-        @memset(output[0..8], 0);
-        std.mem.writeInt(u64, output[8..16], y, .big);
-    } else {
-        const rest = m.len - boundary;
-        const m_1 = m[0..boundary];
-        const y1 = poly(u64, (1 << 64) - (1 << 32), k64, m_1);
-
-        // Prefix (16) + M_2 (rest) + 0x80 (1) + padding
-        const nominal_size = 16 + rest + 1;
-        const padded_size = (std.math.divCeil(usize, nominal_size, 16) catch unreachable) * 16;
-
-        var m_2 = std.heap.page_allocator.alloc(u8, padded_size) catch unreachable;
-        defer std.heap.page_allocator.free(m_2);
-
-        @memset(m_2[0..8], 0);
-        std.mem.writeInt(u64, m_2[8..16], y1, .big);
-        @memcpy(m_2[16..(16 + rest)], m[boundary..]);
-        m_2[16 + rest] = 0x80;
-        @memset(m_2[(16 + rest + 1)..], 0);
-
-        const y2 = poly(u128, (1 << 128) - (1 << 64), k128, m_2);
-        std.mem.writeInt(u128, output, y2, .big);
-    }
-}
 
 
 // Input:
@@ -252,140 +137,6 @@ fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
 }
 
 
-// Input:
-//   K, string of length KEYLEN bytes.
-//   M, string of length less than 2^67 bits.
-//   taglen, the integer 4, 8, 12 or 16.
-// Output:
-//   Y, string of length taglen bytes.
-fn uhash(key_encryptor: *Encryptor, m: []const u8, output: []u8) void {
-    const tag_len = output.len;
-
-    const iter_count = @divExact(tag_len, 4);
-    const max_iter_count: comptime_int = @divExact(MAX_TAG_LEN, 4);
-
-    var l1_key: [L1_KEY_LEN + (max_iter_count - 1) * 16]u8 = undefined;
-    var l2_key: [max_iter_count * 24]u8 = undefined;
-    var l3_key1: [max_iter_count * 64]u8 = undefined;
-    var l3_key2: [max_iter_count * 4]u8 = undefined;
-
-    kdf(key_encryptor, 1, l1_key[0..(L1_KEY_LEN + (iter_count - 1) * 16)]);
-    kdf(key_encryptor, 2, l2_key[0..(iter_count * 24)]);
-    kdf(key_encryptor, 3, l3_key1[0..(iter_count * 64)]);
-    kdf(key_encryptor, 4, l3_key2[0..(iter_count * 4)]);
-
-    for (0..iter_count) |iter_index| {
-        const l1_output_size = @max(std.math.divCeil(usize, m.len, L1_KEY_LEN) catch unreachable, 1) * 8;
-        const l1_output = std.heap.page_allocator.alloc(u8, l1_output_size) catch unreachable;
-        defer std.heap.page_allocator.free(l1_output);
-
-        l1(
-            l1_key[(iter_index * 16)..][0..L1_KEY_LEN],
-            m,
-            l1_output.ptr,
-        );
-
-        var l2_output: [16]u8 = undefined;
-
-        if (m.len <= L1_KEY_LEN) {
-            @memset(l2_output[0..8], 0);
-            @memcpy(l2_output[8..16], l1_output);
-        } else {
-            l2(
-                l2_key[(iter_index * 24)..][0..24],
-                l1_output,
-                &l2_output,
-            );
-        }
-
-        const iter_result = l3(
-            l3_key1[(iter_index * 64)..][0..64],
-            std.mem.readInt(u32, l3_key2[(iter_index * 4)..][0..4], .big),
-            &l2_output,
-        );
-
-        std.mem.writeInt(
-            u32,
-            output[(iter_index * 4)..][0..4],
-            iter_result,
-            .big,
-        );
-    }
-}
-
-
-// Input:
-//   K, string of length KEYLEN bytes.
-//   M, string of length less than 2^67 bits.
-//   Nonce, string of length 1 to BLOCKLEN bytes.
-//   taglen, the integer 4, 8, 12 or 16.
-// Output:
-//   Tag, string of length taglen bytes.
-fn umac(key: *const [KEY_LEN]u8, m: []const u8, nonce: []const u8, output: []u8) void {
-    const tag_len = output.len;
-    std.debug.assert(tag_len == 4 or tag_len == 8 or tag_len == 12 or tag_len == 16);
-
-    var key_encryptor = Encryptor.init(key.*);
-
-    var uhash_output: [16]u8 = undefined;
-    uhash(&key_encryptor, m, uhash_output[0..tag_len]);
-
-    pdf(&key_encryptor, nonce, output[0..tag_len]);
-
-    for (0..tag_len) |index| {
-        output[index] ^= uhash_output[index];
-    }
-}
-
-
-pub const Umac = struct {
-    const Self = @This();
-
-    data: []u8,
-    data_len: usize,
-    key: *const [KEY_LEN]u8,
-    nonce: []const u8,
-    tag_len: usize,
-
-    pub fn init(tag_len: usize, key: *const [KEY_LEN]u8, nonce: []const u8) Self {
-        var allocator = std.heap.page_allocator;
-        const data = allocator.alloc(u8, 1 << 26) catch unreachable;
-
-        return Self{
-            .data = data,
-            .data_len = 0,
-            .key = key,
-            .nonce = nonce,
-            .tag_len = tag_len,
-        };
-    }
-
-    pub fn update(self: *Self, chunk: []const u8) void {
-        @memcpy(self.data[self.data_len..][0..chunk.len], chunk);
-        self.data_len += chunk.len;
-    }
-
-    pub fn finish(self: *Self, output: [*]u8) void {
-        umac(self.key, self.data[0..self.data_len], self.nonce, output[0..self.tag_len]);
-
-        var allocator = std.heap.page_allocator;
-        allocator.free(self.data);
-    }
-
-    pub fn compute(
-        key: *const [KEY_LEN]u8,
-        nonce: []const u8,
-        message: []const u8,
-        output: []u8,
-    ) void {
-        var instance = Self.init(output.len, key, nonce);
-
-        instance.update(message);
-        instance.finish(output.ptr);
-    }
-};
-
-
 const Stream = struct {
     const Self = @This();
 
@@ -395,17 +146,17 @@ const Stream = struct {
     l2_y: u128,
     l2_accum_count: usize = 0,
     l2_last_word: u64 = undefined,
-    l3_key1: *const [64]u8,
-    l3_key2: *const [4]u8,
+    l3_key1: *const [L3_KEY1_LEN]u8,
+    l3_key2: *const [L3_KEY2_LEN]u8,
 
     message_buffer: [L1_KEY_LEN]u8 = undefined,
     message_buffer_len: usize = 0,
 
     pub fn init(
         l1_key: *const [L1_KEY_LEN]u8,
-        l2_key: *const [24]u8,
-        l3_key1: *const [64]u8,
-        l3_key2: *const [4]u8,
+        l2_key: *const [L2_KEY_LEN]u8,
+        l3_key1: *const [L3_KEY1_LEN]u8,
+        l3_key2: *const [L3_KEY2_LEN]u8,
     ) Self {
         const mask_32 = (1 << 25) - 1;
         const mask_64 = (mask_32 << 32) + mask_32;
@@ -535,7 +286,7 @@ const Stream = struct {
 
 const MAX_STREAM_COUNT = @divExact(MAX_TAG_LEN, 4);
 
-pub const StreamedUmac = struct {
+pub const Umac = struct {
     const Self = @This();
 
     pad: [MAX_TAG_LEN]u8 = undefined,
@@ -543,9 +294,9 @@ pub const StreamedUmac = struct {
     stream_count: usize,
 
     l1_key: [L1_KEY_LEN + (MAX_STREAM_COUNT - 1) * 16]u8 = undefined,
-    l2_key: [MAX_STREAM_COUNT * 24]u8 = undefined,
-    l3_key1: [MAX_STREAM_COUNT * 64]u8 = undefined,
-    l3_key2: [MAX_STREAM_COUNT * 4]u8 = undefined,
+    l2_key: [L2_KEY_LEN * MAX_STREAM_COUNT]u8 = undefined,
+    l3_key1: [L3_KEY1_LEN * MAX_STREAM_COUNT]u8 = undefined,
+    l3_key2: [L3_KEY2_LEN * MAX_STREAM_COUNT]u8 = undefined,
 
     pub fn init(tag_len: usize, key: *const [KEY_LEN]u8, nonce: []const u8) Self {
         const stream_count = @divExact(tag_len, 4);
@@ -557,16 +308,16 @@ pub const StreamedUmac = struct {
         var key_encryptor = Encryptor.init(key.*);
 
         kdf(&key_encryptor, 1, self.l1_key[0..(L1_KEY_LEN + (stream_count - 1) * 16)]);
-        kdf(&key_encryptor, 2, self.l2_key[0..(stream_count * 24)]);
-        kdf(&key_encryptor, 3, self.l3_key1[0..(stream_count * 64)]);
-        kdf(&key_encryptor, 4, self.l3_key2[0..(stream_count * 4)]);
+        kdf(&key_encryptor, 2, self.l2_key[0..(stream_count * L2_KEY_LEN)]);
+        kdf(&key_encryptor, 3, self.l3_key1[0..(stream_count * L3_KEY1_LEN)]);
+        kdf(&key_encryptor, 4, self.l3_key2[0..(stream_count * L3_KEY2_LEN)]);
 
         for (0..stream_count) |stream_index| {
             self.streams[stream_index] = Stream.init(
                 self.l1_key[(stream_index * 16)..][0..L1_KEY_LEN],
-                self.l2_key[(stream_index * 24)..][0..24],
-                self.l3_key1[(stream_index * 64)..][0..64],
-                self.l3_key2[(stream_index * 4)..][0..4],
+                self.l2_key[(stream_index * L2_KEY_LEN)..][0..L2_KEY_LEN],
+                self.l3_key1[(stream_index * L3_KEY1_LEN)..][0..L3_KEY1_LEN],
+                self.l3_key2[(stream_index * L3_KEY2_LEN)..][0..L3_KEY2_LEN],
             );
         }
 
@@ -670,7 +421,7 @@ test "umac" {
     for (test_cases) |test_case| {
         inline for (.{4, 8, 12}, 0..) |tag_len, tag_len_index| {
             var tag: [tag_len]u8 = undefined;
-            var instance = StreamedUmac.init(tag_len, key, nonce);
+            var instance = Umac.init(tag_len, key, nonce);
 
             for (0..test_case.repeat) |_| {
                 instance.update(test_case.part);
