@@ -19,7 +19,7 @@ const L3_KEY2_LEN = 4;
 //   numbytes, a non-negative integer less than 2^64.
 // Output:
 //   Y, string of length numbytes bytes.
-fn kdf(encryptor: *Encryptor, index: u8, output: []u8) void {
+fn kdf(encryptor: *Encryptor, index: u8, output: []u8, little_endian: bool) void {
     const iter_count = std.math.divCeil(u32, @intCast(output.len), BLOCK_LEN) catch unreachable;
 
     var cipher_input = [_]u8{0} ** BLOCK_LEN;
@@ -33,6 +33,12 @@ fn kdf(encryptor: *Encryptor, index: u8, output: []u8) void {
 
         var block_output: [BLOCK_LEN]u8 = undefined;
         encryptor.encrypt(&block_output, &cipher_input);
+
+        if (little_endian) {
+            for (0..@divExact(BLOCK_LEN, 4)) |word_index| {
+                std.mem.reverse(u8, block_output[(word_index * 4)..][0..4]);
+            }
+        }
 
         @memcpy(output[start_index..end_index], block_output[0..(end_index - start_index)]);
     }
@@ -52,7 +58,7 @@ fn pdf(key_encryptor: *Encryptor, nonce: []const u8, output: []u8) void {
 
     if (tag_len == 4 or tag_len == 8) {
         if (BLOCK_LEN > 1024) {
-            @panic("Unsupported BLOCK_LEN for tag_len 4 or 8");
+            @panic("Unimplemented BLOCK_LEN for tag_len 4 or 8");
         }
 
         index = nonce[nonce.len - 1] % @divExact(BLOCK_LEN, tag_len);
@@ -67,7 +73,7 @@ fn pdf(key_encryptor: *Encryptor, nonce: []const u8, output: []u8) void {
     padded_nonce[nonce.len - 1] ^= @intCast(index);
 
     var subkey: [KEY_LEN]u8 = undefined;
-    kdf(key_encryptor, 0, &subkey);
+    kdf(key_encryptor, 0, &subkey, false);
 
     var encryptor = Encryptor.init(subkey);
 
@@ -95,10 +101,10 @@ fn nh(k: *const [L1_KEY_LEN]u8, m: []const u8) u64 {
             const second_index = first_index + 4 * 4;
 
             const m_i = std.mem.readInt(u32, m[first_index..][0..4], .little);
-            const k_i = std.mem.readInt(u32, k[first_index..][0..4], .big);
+            const k_i = std.mem.readInt(u32, k[first_index..][0..4], .little);
 
             const m_i2 = std.mem.readInt(u32, m[second_index..][0..4], .little);
-            const k_i2 = std.mem.readInt(u32, k[second_index..][0..4], .big);
+            const k_i2 = std.mem.readInt(u32, k[second_index..][0..4], .little);
 
             y +%= @as(u64, m_i +% k_i) *% @as(u64, m_i2 +% k_i2);
         }
@@ -307,10 +313,10 @@ pub const Umac = extern struct {
 
         var key_encryptor = Encryptor.init(key.*);
 
-        kdf(&key_encryptor, 1, self.l1_key[0..(L1_KEY_LEN + (stream_count - 1) * 16)]);
-        kdf(&key_encryptor, 2, self.l2_key[0..(stream_count * L2_KEY_LEN)]);
-        kdf(&key_encryptor, 3, self.l3_key1[0..(stream_count * L3_KEY1_LEN)]);
-        kdf(&key_encryptor, 4, self.l3_key2[0..(stream_count * L3_KEY2_LEN)]);
+        kdf(&key_encryptor, 1, self.l1_key[0..(L1_KEY_LEN + (stream_count - 1) * 16)], true);
+        kdf(&key_encryptor, 2, self.l2_key[0..(stream_count * L2_KEY_LEN)], false);
+        kdf(&key_encryptor, 3, self.l3_key1[0..(stream_count * L3_KEY1_LEN)], false);
+        kdf(&key_encryptor, 4, self.l3_key2[0..(stream_count * L3_KEY2_LEN)], false);
 
         for (0..stream_count) |stream_index| {
             self.streams[stream_index] = Stream.init(
@@ -402,6 +408,7 @@ test "umac" {
             .expected = .{"6C8A252C", "13AE3F7A2D2255B8", "4F45BBC707CBF301094B6F7A"},
         },
         .{
+            // See: https://www.rfc-editor.org/errata/eid3507
             .part = "a",
             .repeat = 1 << 25,
             .expected = .{"85EE5CAE", "FACA46F856E9B45F", "A621C2457C0012E64F3FDAE9"},
