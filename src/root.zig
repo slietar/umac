@@ -392,11 +392,12 @@ const Stream = struct {
     l1_key: *const [L1_KEY_LEN]u8,
     l2_k64: u128,
     l2_k128: u128, // Using u128 to avoid later cast
-    l2_y: u64,
+    l2_y: u128,
+    l2_accum_count: usize = 0,
+    l2_last_word: u64 = undefined,
     l3_key1: *const [64]u8,
     l3_key2: *const [4]u8,
 
-    chunk_count: usize = 0,
     message_buffer: [L1_KEY_LEN]u8 = undefined,
     message_buffer_len: usize = 0,
 
@@ -445,7 +446,7 @@ const Stream = struct {
             const word = nh(self.l1_key, target) +% (L1_KEY_LEN << 3);
             self.run_l2(word);
 
-            self.chunk_count += 1;
+            self.l2_accum_count += 1;
         }
 
         self.message_buffer_len = (self.message_buffer_len + message_chunk.len) % L1_KEY_LEN;
@@ -464,24 +465,55 @@ const Stream = struct {
     }
 
     fn run_l2(self: *Self, word: u64) void {
-        if (self.chunk_count == 0) {
+        if (self.l2_accum_count == 0) {
             self.l2_y = @intCast(word);
-        } else {
-            if (self.chunk_count == 1) {
-                self.l2_y = @intCast((self.l2_k64 + self.l2_y) % PRIME_64);
+        } else if (self.l2_accum_count < 1 << 14) {
+            if (self.l2_accum_count == 1) {
+                self.l2_y = (self.l2_k64 + self.l2_y) % PRIME_64;
             }
 
-            self.l2_y = @intCast((self.l2_k64 * self.l2_y + @as(u128, word)) % PRIME_64);
+            self.l2_y = (self.l2_k64 * self.l2_y + @as(u128, word)) % PRIME_64;
+        } else {
+            if (self.l2_accum_count == 1 << 14) {
+                self.l2_y = (self.l2_k128 + self.l2_y) % PRIME_128;
+            }
+
+            if (self.l2_accum_count % 2 == 0) {
+                self.l2_last_word = word;
+            } else {
+                self.l2_y = @intCast(
+                    (
+                        (
+                            @as(u256, self.l2_k128) * @as(u256, self.l2_y)
+                        ) + (@as(u256, self.l2_last_word) << 64) + @as(u256, word)
+                    ) % PRIME_128
+                );
+            }
         }
     }
 
     pub fn finish(self: *Self) [4]u8 {
-        if (self.message_buffer_len > 0 or self.chunk_count == 0) {
+        if (self.message_buffer_len > 0 or self.l2_accum_count == 0) {
             const padded_chunk_size = @max(1, std.math.divCeil(usize, self.message_buffer_len, L1_PAD_BOUNDARY) catch unreachable) * L1_PAD_BOUNDARY;
             @memset(self.message_buffer[self.message_buffer_len..padded_chunk_size], 0);
 
             const word = nh(self.l1_key, self.message_buffer[0..padded_chunk_size]) +% (self.message_buffer_len << 3);
-            self.run_l2(word);
+
+            if (self.l2_accum_count > 0) {
+                self.run_l2(word);
+                self.l2_accum_count += 1;
+            } else {
+                self.l2_y = @intCast(word);
+            }
+        }
+
+        if (self.l2_accum_count > 1 << 14) {
+            self.run_l2(0x80 << (64 - 8));
+            self.l2_accum_count += 1;
+
+            if (self.l2_accum_count % 2 == 1) {
+                self.run_l2(0);
+            }
         }
 
         var l2_output: [16]u8 = undefined;
@@ -605,8 +637,23 @@ test "umac" {
         },
         .{
             .part = "a",
+            .repeat = (1 << 24) - 1,
+            .expected = .{"83C206C8", "FCE61C9EE7D13958", "A00D9823CD389FE1309F54F6"},
+        },
+        .{
+            .part = "a",
+            .repeat = 1 << 24,
+            .expected = .{"A1B74376", "DE9359204D2ECB26", "8278DD9D67C76D9F9A3C5386"},
+        },
+        .{
+            .part = "a",
+            .repeat = (1 << 24) + 1,
+            .expected = .{"6C8A252C", "13AE3F7A2D2255B8", "4F45BBC707CBF301094B6F7A"},
+        },
+        .{
+            .part = "a",
             .repeat = 1 << 25,
-            .expected = .{"5109A660", "2E2DBC36860A0A5F", "72C6388BACE3ACE6FBF062D9"},
+            .expected = .{"85EE5CAE", "FACA46F856E9B45F", "A621C2457C0012E64F3FDAE9"},
         },
         .{
             .part = "abc",
@@ -633,6 +680,9 @@ test "umac" {
 
             var expected_tag: [tag_len]u8 = undefined;
             _ = try std.fmt.hexToBytes(&expected_tag, test_case.expected[tag_len_index]);
+
+            // const hex_output = std.fmt.bytesToHex(tag[0..4], .lower);
+            // std.debug.print(">> {s} {s} \n", .{hex_output, test_case.expected[tag_len_index]});
 
             try std.testing.expectEqualSlices(u8, tag[0..tag_len], expected_tag[0..tag_len]);
         }
