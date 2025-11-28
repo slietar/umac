@@ -102,11 +102,16 @@ pub fn build(b: *std.Build) !void {
     const benchmark_step = b.step("benchmark", "Run benchmark");
     benchmark_step.dependOn(&benchmark_artifact.step);
 
+    b.installArtifact(benchmark_exe);
+
 
     const test_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = standard_target,
     });
+
+    benchmark_module.linkSystemLibrary("nettle", .{});
+
 
     const mod_tests = b.addTest(.{
         .root_module = test_module,
