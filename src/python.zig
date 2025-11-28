@@ -37,10 +37,15 @@ fn createModuleDef(name: []const u8) py.PyModuleDef {
 var module_def = createModuleDef("umac");
 
 
-const UMAC = extern struct {
-    ob_base: py.PyObject,
+const UMACData = struct {
+    key: umac.Key,
     umac: umac.Umac,
     tag_len: u8,
+};
+
+const UMAC = extern struct {
+    ob_base: py.PyObject,
+    data: [@sizeOf(UMACData)]u8 align(@alignOf(UMACData)),
 };
 
 var umac_methods = [_]py.PyMethodDef{
@@ -121,9 +126,11 @@ fn UMACNew(_: *anyopaque, args: [*c]py.PyObject, kwargs: [*c]py.PyObject) callco
 
     const instance = alloc_fn(@ptrCast(umac_type), 0) orelse return null;
     const self: *UMAC = @alignCast(@ptrCast(instance));
+    const data: *UMACData = @ptrCast(&self.data);
 
-    self.umac = umac.Umac.init(tag_len, key[0..umac.KEY_LEN], nonce);
-    self.tag_len = tag_len;
+    data.key = umac.Key.init(tag_len, key[0..umac.KEY_LEN]);
+    data.umac = umac.Umac.init(tag_len, &data.key, nonce);
+    data.tag_len = tag_len;
 
     return instance;
 }
@@ -147,16 +154,19 @@ fn UMACUpdate(instance: [*c]py.PyObject, args: [*c]py.PyObject, kwargs: [*c]py.P
     const part = part_ptr[0..@intCast(part_buffer.len)];
 
     const self: *UMAC = @alignCast(@ptrCast(instance));
-    self.umac.update(part);
+    const data: *UMACData = @ptrCast(&self.data);
+
+    data.umac.update(part);
 
     return py.Py_None();
 }
 
 fn UMACDigest(instance: [*c]py.PyObject, _: [*c]py.PyObject) callconv(.c) [*c]py.PyObject {
     const self: *UMAC = @alignCast(@ptrCast(instance));
+    const data: *UMACData = @ptrCast(&self.data);
 
-    const digest = py.PyBytes_FromStringAndSize(null, @intCast(self.tag_len)) orelse return null;
-    self.umac.finish(py.PyBytes_AsString(digest));
+    const digest = py.PyBytes_FromStringAndSize(null, @intCast(data.tag_len)) orelse return null;
+    data.umac.finish(py.PyBytes_AsString(digest));
 
     return digest;
 }

@@ -19,7 +19,7 @@ const L3_KEY2_LEN = 4;
 //   numbytes, a non-negative integer less than 2^64.
 // Output:
 //   Y, string of length numbytes bytes.
-fn kdf(encryptor: *Encryptor, index: u8, output: []u8, little_endian: bool) void {
+fn kdf(encryptor: *const Encryptor, index: u8, output: []u8, little_endian: bool) void {
     const iter_count = std.math.divCeil(u32, @intCast(output.len), BLOCK_LEN) catch unreachable;
 
     var cipher_input = [_]u8{0} ** BLOCK_LEN;
@@ -51,7 +51,7 @@ fn kdf(encryptor: *Encryptor, index: u8, output: []u8, little_endian: bool) void
 //   taglen, the integer 4, 8, 12 or 16.
 // Output:
 //   Y, string of length taglen bytes.
-fn pdf(key_encryptor: *Encryptor, nonce: []const u8, output: []u8) void {
+fn pdf(key_encryptor: *const Encryptor, nonce: []const u8, output: []u8) void {
     const tag_len = output.len;
 
     var index: usize = undefined;
@@ -169,7 +169,39 @@ fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
 }
 
 
-const Stream = extern struct {
+pub const Key = struct {
+    const Self = @This();
+
+    encryptor: Encryptor,
+    l1_key: [L1_KEY_LEN + (MAX_STREAM_COUNT - 1) * 16]u8 = undefined,
+    l2_key: [L2_KEY_LEN * MAX_STREAM_COUNT]u8 = undefined,
+    l3_key1: [L3_KEY1_LEN * MAX_STREAM_COUNT]u8 = undefined,
+    l3_key2: [L3_KEY2_LEN * MAX_STREAM_COUNT]u8 = undefined,
+
+    pub fn init(max_tag_len: usize, buffer: *const [KEY_LEN]u8) Self {
+        const stream_count = @divExact(max_tag_len, 4);
+
+        var encryptor = Encryptor.init(buffer.*);
+
+        var self = Self{
+            .encryptor = encryptor,
+            .l1_key = undefined,
+            .l2_key = undefined,
+            .l3_key1 = undefined,
+            .l3_key2 = undefined,
+        };
+
+        kdf(&encryptor, 1, self.l1_key[0..(L1_KEY_LEN + (stream_count - 1) * 16)], true);
+        kdf(&encryptor, 2, self.l2_key[0..(stream_count * L2_KEY_LEN)], false);
+        kdf(&encryptor, 3, self.l3_key1[0..(stream_count * L3_KEY1_LEN)], false);
+        kdf(&encryptor, 4, self.l3_key2[0..(stream_count * L3_KEY2_LEN)], false);
+
+        return self;
+    }
+};
+
+
+const Stream = struct {
     const Self = @This();
 
     l1_key: *const [L1_KEY_LEN]u8,
@@ -318,7 +350,7 @@ const Stream = extern struct {
 
 const MAX_STREAM_COUNT = @divExact(MAX_TAG_LEN, 4);
 
-pub const Umac = extern struct {
+pub const Umac = struct {
     const Self = @This();
 
     pad: [MAX_TAG_LEN]u8 = undefined,
@@ -330,30 +362,21 @@ pub const Umac = extern struct {
     l3_key1: [L3_KEY1_LEN * MAX_STREAM_COUNT]u8 = undefined,
     l3_key2: [L3_KEY2_LEN * MAX_STREAM_COUNT]u8 = undefined,
 
-    pub fn init(tag_len: usize, key: *const [KEY_LEN]u8, nonce: []const u8) Self {
-        const stream_count = @divExact(tag_len, 4);
-
+    pub fn init(tag_len: usize, key: *const Key, nonce: []const u8) Self {
         var self = Self{
-            .stream_count = stream_count,
+            .stream_count = @divExact(tag_len, 4),
         };
 
-        var key_encryptor = Encryptor.init(key.*);
-
-        kdf(&key_encryptor, 1, self.l1_key[0..(L1_KEY_LEN + (stream_count - 1) * 16)], true);
-        kdf(&key_encryptor, 2, self.l2_key[0..(stream_count * L2_KEY_LEN)], false);
-        kdf(&key_encryptor, 3, self.l3_key1[0..(stream_count * L3_KEY1_LEN)], false);
-        kdf(&key_encryptor, 4, self.l3_key2[0..(stream_count * L3_KEY2_LEN)], false);
-
-        for (0..stream_count) |stream_index| {
+        for (0..self.stream_count) |stream_index| {
             self.streams[stream_index] = Stream.init(
-                self.l1_key[(stream_index * 16)..][0..L1_KEY_LEN],
-                self.l2_key[(stream_index * L2_KEY_LEN)..][0..L2_KEY_LEN],
-                self.l3_key1[(stream_index * L3_KEY1_LEN)..][0..L3_KEY1_LEN],
-                self.l3_key2[(stream_index * L3_KEY2_LEN)..][0..L3_KEY2_LEN],
+                key.l1_key[(stream_index * 16)..][0..L1_KEY_LEN],
+                key.l2_key[(stream_index * L2_KEY_LEN)..][0..L2_KEY_LEN],
+                key.l3_key1[(stream_index * L3_KEY1_LEN)..][0..L3_KEY1_LEN],
+                key.l3_key2[(stream_index * L3_KEY2_LEN)..][0..L3_KEY2_LEN],
             );
         }
 
-        pdf(&key_encryptor, nonce, self.pad[0..tag_len]);
+        pdf(&key.encryptor, nonce, self.pad[0..tag_len]);
 
         return self;
     }
@@ -383,7 +406,7 @@ pub const Umac = extern struct {
 
 
 test "umac" {
-    const key = "abcdefghijklmnop";
+    const key = Key.init(16, "abcdefghijklmnop");
     const nonce = "bcdefghi";
 
     const TestCase = struct {
@@ -454,7 +477,7 @@ test "umac" {
     for (test_cases) |test_case| {
         inline for (.{4, 8, 12}, 0..) |tag_len, tag_len_index| {
             var tag: [tag_len]u8 = undefined;
-            var instance = Umac.init(tag_len, key, nonce);
+            var instance = Umac.init(tag_len, &key, nonce);
 
             for (0..test_case.repeat) |_| {
                 instance.update(test_case.part);
