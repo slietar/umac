@@ -14,4 +14,21 @@ requires-python = "~=3.11"
 Repository = "https://github.com/slietar/umac"
 
 [tool.oryn]
-include = ["umac.*"]
+abi = "abi3"
+interpreter = "cp311"
+include = ["src/*"]
+
+[[tool.oryn.distributions]]
+platform = "macosx_14_0_arm64"
+overrides = { "src/umac.abi3.so" = "../zig-out/lib/libumac-aarch64-macos.dylib" }
+
+[[tool.oryn.distributions]]
+platform = "linux_x86_64"
+overrides = { "src/umac.abi3.so" = "../zig-out/lib/libumac-x86_64-linux.so" }
+
+[[tool.oryn.distributions]]
+platform = "manylinux2014_aarch64"
+overrides = { "src/umac.abi3.so" = "../zig-out/lib/libumac-aarch64-linux.so" }
+
+[tool.uv.sources]
+oryn = { path = "../../oryn", editable = true }

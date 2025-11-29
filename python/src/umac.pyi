@@ -1,16 +1,19 @@
+from typing import Literal
+
+
 class UMAC:
     """
     A class for computing UMAC hashes.
     """
 
-    def __init__(self, digest_size: int, key: bytes, nonce: bytes) -> None:
+    def __init__(self, digest_size: Literal[4, 8, 12, 16], key: bytes, nonce: bytes) -> None:
         """
         Initialize a UMAC instance.
 
         Parameters
         ----------
         digest_size
-            The size of the digest in bytes. One of 4, 8, 16 or 32.
+            The size of the digest in bytes. One of 4, 8, 12 or 16.
         """
 
     def update(self, data: bytes, /) -> None:
