@@ -16,46 +16,44 @@ fn runCommand(alloc: mem.Allocator, args: []const []const u8) std.process.Child.
 pub fn build(b: *std.Build) !void {
     const allocator = std.heap.page_allocator;
 
-    const TargetSpec = struct {
-        name: []const u8,
-        target: std.Build.ResolvedTarget,
-    };
+    const standard_target = b.standardTargetOptions(.{});
 
-    const target_specs = [_]TargetSpec{
-        .{
-            .name = "macos-aarch64",
-            .target = b.resolveTargetQuery(.{
-                .cpu_arch = .aarch64,
-                .os_tag = .macos,
-            }),
-        },
-        .{
-            .name = "linux-aarch64",
-            .target = b.resolveTargetQuery(.{
-                .cpu_arch = .aarch64,
-                .os_tag = .linux,
-            }),
-        },
-        .{
-            .name = "linux-x86_64",
-            .target = b.resolveTargetQuery(.{
-                .cpu_arch = .x86_64,
-                .os_tag = .linux,
-            }),
-        },
-    };
 
-    for (target_specs) |target_spec| {
-        const target = target_spec.target;
+    // Step: python
 
-        const python_library_module = b.createModule(.{
-            .optimize = .ReleaseSmall,
-            .root_source_file = b.path("src/python.zig"),
-            .target = target,
-        });
+    {
+        const step = b.step("python", "Build Python extension");
 
-        python_library_module.link_libc = true;
+        const TargetSpec = struct {
+            name: []const u8,
+            target: std.Build.ResolvedTarget,
+        };
 
+        const target_specs = [_]TargetSpec{
+            .{
+                .name = "macos-aarch64",
+                .target = b.resolveTargetQuery(.{
+                    .cpu_arch = .aarch64,
+                    .os_tag = .macos,
+                }),
+            },
+            .{
+                .name = "linux-aarch64",
+                .target = b.resolveTargetQuery(.{
+                    .abi = .gnu,
+                    .cpu_arch = .aarch64,
+                    .os_tag = .linux,
+                }),
+            },
+            .{
+                .name = "linux-x86_64",
+                .target = b.resolveTargetQuery(.{
+                    .abi = .gnu,
+                    .cpu_arch = .x86_64,
+                    .os_tag = .linux,
+                }),
+            },
+        };
 
         const find_python_stdout = try runCommand(allocator, &[_][]const u8{"uv", "python", "find", "3.14"});
         defer allocator.free(find_python_stdout);
@@ -64,61 +62,75 @@ pub fn build(b: *std.Build) !void {
         const python_include_path = try runCommand(allocator, &[_][]const u8{python_bin_path, "-c", "print(__import__('sysconfig').get_path('include'), end='')"});
         defer allocator.free(python_include_path);
 
-        python_library_module.addIncludePath(.{ .cwd_relative = python_include_path });
+        for (target_specs) |target_spec| {
+            const target = target_spec.target;
 
+            const module = b.createModule(.{
+                .optimize = .ReleaseSmall,
+                .root_source_file = b.path("src/python.zig"),
+                .target = target,
+            });
 
-        const name = try std.fmt.allocPrint(b.allocator, "umac-{s}-{s}", .{
-            @tagName(target.result.cpu.arch),
-            @tagName(target.result.os.tag),
-        });
+            module.link_libc = true;
+            module.addIncludePath(.{ .cwd_relative = python_include_path });
 
-        const python_dynamic_library = b.addLibrary(.{
-            .linkage = .dynamic,
-            .name = name,
-            .root_module = python_library_module,
-        });
+            const name = try std.fmt.allocPrint(b.allocator, "umac-{s}-{s}", .{
+                @tagName(target.result.cpu.arch),
+                @tagName(target.result.os.tag),
+            });
 
-        python_dynamic_library.linker_allow_shlib_undefined = true;
+            const library = b.addLibrary(.{
+                .linkage = .dynamic,
+                .name = name,
+                .root_module = module,
+            });
 
-        b.installArtifact(python_dynamic_library);
+            library.linker_allow_shlib_undefined = true;
+
+            const artifact = b.addInstallArtifact(library, .{});
+            step.dependOn(&artifact.step);
+        }
     }
 
 
-    const standard_target = b.standardTargetOptions(.{});
+    // Step: benchmark
 
-    const benchmark_module = b.createModule(.{
-        .optimize = .ReleaseFast,
-        .root_source_file = b.path("src/benchmark.zig"),
-        .target = standard_target,
-    });
+    {
+        const step = b.step("benchmark", "Run benchmark");
 
-    const benchmark_exe = b.addExecutable(.{
-        .name = "benchmark",
-        .root_module = benchmark_module,
-    });
+        const module = b.createModule(.{
+            .optimize = .ReleaseFast,
+            .root_source_file = b.path("src/benchmark.zig"),
+            .target = standard_target,
+        });
 
-    const benchmark_artifact = b.addRunArtifact(benchmark_exe);
+        module.linkSystemLibrary("nettle", .{});
 
-    const benchmark_step = b.step("benchmark", "Run benchmark");
-    benchmark_step.dependOn(&benchmark_artifact.step);
+        const exe = b.addExecutable(.{
+            .name = "benchmark",
+            .root_module = module,
+        });
 
-    b.installArtifact(benchmark_exe);
-
-
-    const test_module = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = standard_target,
-    });
-
-    benchmark_module.linkSystemLibrary("nettle", .{});
+        const run = b.addRunArtifact(exe);
+        step.dependOn(&run.step);
+    }
 
 
-    const mod_tests = b.addTest(.{
-        .root_module = test_module,
-    });
+    // Step: test
 
-    const run_mod_tests = b.addRunArtifact(mod_tests);
+    {
+        const step = b.step("test", "Run tests");
 
-    const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&run_mod_tests.step);
+        const module = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = standard_target,
+        });
+
+        const @"test" = b.addTest(.{
+            .root_module = module,
+        });
+
+        const run = b.addRunArtifact(@"test");
+        step.dependOn(&run.step);
+    }
 }
