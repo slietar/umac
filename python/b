@@ -1,5 +1,0 @@
-warning: The `requires-python` specifier (`~=3.11`) in `umac` uses the tilde specifier (`~=`) without a patch version. This will be interpreted as `>=3.11, <4`. Did you mean `~=3.11.0` to constrain the version as `>=3.11.0, <3.12`? We recommend only using the tilde specifier with a patch version to avoid ambiguity.
-{ 46, 121, 244, 97, 167, 76, 3, 170, 201, 67, 186, 109, 33, 46, 182, 203 }
-{ 46, 121, 244, 97 }
-{ 46, 121, 244, 97, 167, 76, 3, 170, 201, 67, 186, 109, 33, 46, 182, 203 }
-{ 160, 175, 62, 2 }
