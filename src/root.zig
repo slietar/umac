@@ -144,8 +144,6 @@ const OFFSET_64 = 59;
 const OFFSET_128 = 159;
 
 const PRIME_36: u64 = (1 << 36) - 5;
-const PRIME_64 = (1 << 64) - OFFSET_64;
-const PRIME_128: u128 = (1 << 128) - OFFSET_128;
 
 
 // Input:
@@ -164,7 +162,7 @@ fn l3(k1: *const [64]u8, k2: u32, m: *const [16]u8) u32 {
         y += m_i * k_i;
     }
 
-    const z: u32 = @truncate(@mod(y, PRIME_36));
+    const z: u32 = @truncate(y % PRIME_36);
     return z ^ k2;
 }
 
