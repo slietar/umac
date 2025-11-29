@@ -9,11 +9,11 @@ const nettle = @cImport({
 
 const tag_len = 4;
 
-const buffer: [chunk_size]u8 = std.mem.zeroes([chunk_size]u8);
+var buffer: [chunk_size]u8 = std.mem.zeroes([chunk_size]u8);
 
 const chunk_size = 1 << 10;
-const chunk_count = 1 << 6;
-const repeat_count = 1 << 4;
+const chunk_count = 1 << 10;
+const repeat_count = 1 << 0;
 
 const key_value = "abcdefghijklmnop";
 const nonce = "bcdefghi";
@@ -45,6 +45,9 @@ fn run_nettle(output: *[tag_len]u8) void {
 
 pub fn main() !void {
     const message_size = chunk_size * chunk_count * repeat_count;
+
+    var random = std.Random.Xoroshiro128.init(0);
+    random.fill(&buffer);
 
     for ([2]struct {
         name: []const u8,
