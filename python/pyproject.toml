@@ -23,7 +23,7 @@ platform = "macosx_14_0_arm64"
 overrides = { "src/umac.abi3.so" = "../zig-out/lib/libumac-aarch64-macos.dylib" }
 
 [[tool.oryn.distributions]]
-platform = "linux_x86_64"
+platform = "manylinux2014_x86_64"
 overrides = { "src/umac.abi3.so" = "../zig-out/lib/libumac-x86_64-linux.so" }
 
 [[tool.oryn.distributions]]
