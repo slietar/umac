@@ -144,7 +144,7 @@ const OFFSET_64 = 59;
 const OFFSET_128 = 159;
 
 const PRIME_36: u64 = (1 << 36) - 5;
-const PRIME_64: u64 = (1 << 64) - OFFSET_64;
+const PRIME_64 = (1 << 64) - OFFSET_64;
 const PRIME_128: u128 = (1 << 128) - OFFSET_128;
 
 
@@ -199,6 +199,40 @@ pub const Key = struct {
         return self;
     }
 };
+
+
+inline fn split_u64(x: u64) struct { high: u64, low: u64 } {
+    return .{
+        .high = @as(u64, x >> 32),
+        .low = @as(u64, x & 0xffffffff),
+    };
+}
+
+fn poly64(k: u64, y: u64, m: u64) u64 {
+    const ks = split_u64(k);
+    const ys = split_u64(y);
+
+    const x = split_u64(ks.high * ys.low + ks.low * ys.high);
+    var r = (ks.high * ys.high + x.high) * OFFSET_64 + ks.low * ys.low;
+    const t = x.low << 32;
+
+    r +%= t;
+
+    if (r < t) {
+        r += OFFSET_64;
+    }
+
+    r +%= m;
+
+    if (r < m) {
+        r += OFFSET_64;
+    }
+
+    return r;
+
+    // Simple alternative
+    // return @intCast((@as(u128, k) * @as(u128, y) + @as(u128, m)) % PRIME_64);
+}
 
 
 const Stream = struct {
@@ -287,23 +321,30 @@ const Stream = struct {
                 self.l2_y = (self.l2_k64 + self.l2_y) % PRIME_64;
             }
 
-            self.l2_y = (self.l2_k64 * self.l2_y + @as(u128, word)) % PRIME_64;
-        } else {
-            if (self.l2_accum_count == 1 << 14) {
-                self.l2_y = (self.l2_k128 + self.l2_y) % PRIME_128;
-            }
-
-            if (self.l2_accum_count % 2 == 0) {
-                self.l2_last_word = word;
+            if (word >= (1 << 64) - (1 << 32)) {
+                const prod = self.l2_k64 * self.l2_y + @as(u128, word);
+                self.l2_y = @intCast((prod & ((1 << 64) - 1)) + (prod >> 64) * OFFSET_64 % PRIME_64);
+                // self.l2_y = poly64(@as(u64, @intCast(self.l2_k64)), @as(u64, @intCast(self.l2_y)), @as(u64, word));
             } else {
-                self.l2_y = @intCast(
-                    (
-                        (
-                            @as(u256, self.l2_k128) * @as(u256, self.l2_y)
-                        ) + (@as(u256, self.l2_last_word) << 64) + @as(u256, word)
-                    ) % PRIME_128
-                );
+                self.l2_y = poly64(@as(u64, @intCast(self.l2_k64)), @as(u64, @intCast(self.l2_y)), @as(u64, word));
+                // self.l2_y = (self.l2_k64 * self.l2_y + @as(u128, word)) % PRIME_64;
             }
+        } else {
+            // if (self.l2_accum_count == 1 << 14) {
+            //     self.l2_y = (self.l2_k128 + self.l2_y) % PRIME_128;
+            // }
+
+            // if (self.l2_accum_count % 2 == 0) {
+            //     self.l2_last_word = word;
+            // } else {
+            //     self.l2_y = @intCast(
+            //         (
+            //             (
+            //                 @as(u256, self.l2_k128) * @as(u256, self.l2_y)
+            //             ) + (@as(u256, self.l2_last_word) << 64) + @as(u256, word)
+            //         ) % PRIME_128
+            //     );
+            // }
         }
     }
 
@@ -332,7 +373,7 @@ const Stream = struct {
         }
 
         var l2_output: [16]u8 = undefined;
-        std.mem.writeInt(u128, &l2_output, self.l2_y, .big);
+        std.mem.writeInt(u128, &l2_output, @as(u128, self.l2_y), .big);
 
         const iter_result = l3(
             self.l3_key1,

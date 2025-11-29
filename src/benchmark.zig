@@ -12,8 +12,8 @@ const tag_len = 4;
 const buffer: [chunk_size]u8 = std.mem.zeroes([chunk_size]u8);
 
 const chunk_size = 1 << 10;
-const chunk_count = 1 << 15;
-const message_size = chunk_size * chunk_count;
+const chunk_count = 1 << 6;
+const repeat_count = 1 << 4;
 
 const key_value = "abcdefghijklmnop";
 const nonce = "bcdefghi";
@@ -44,6 +44,8 @@ fn run_nettle(output: *[tag_len]u8) void {
 
 
 pub fn main() !void {
+    const message_size = chunk_size * chunk_count * repeat_count;
+
     for ([2]struct {
         name: []const u8,
         func: *const fn (output: *[tag_len]u8) void,
@@ -52,9 +54,11 @@ pub fn main() !void {
         .{ .name = "Nettle", .func = &run_nettle },
     }) |algorithm| {
         var timer = try std.time.Timer.start();
-
         var output: [tag_len]u8 = undefined;
-        algorithm.func(&output);
+
+        for (0..repeat_count) |_| {
+            algorithm.func(&output);
+        }
 
         const duration_ns = timer.read();
         const speed: f64 = @as(f64, @floatFromInt(message_size)) / @as(f64, @floatFromInt(duration_ns)) * std.time.ns_per_s / 1e6;
