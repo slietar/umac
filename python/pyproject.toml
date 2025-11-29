@@ -1,5 +1,5 @@
 [build-system]
-requires = ["oryn~=1.3"]
+requires = ["oryn~=2.0"]
 build-backend = "oryn"
 
 [project]
@@ -29,6 +29,3 @@ overrides = { "src/umac.abi3.so" = "../zig-out/lib/libumac-x86_64-linux.so" }
 [[tool.oryn.distributions]]
 platform = "manylinux2014_aarch64"
 overrides = { "src/umac.abi3.so" = "../zig-out/lib/libumac-aarch64-linux.so" }
-
-[tool.uv.sources]
-oryn = { path = "../../oryn", editable = true }

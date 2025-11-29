@@ -25,8 +25,8 @@ jobs:
         run: uv python install 3.14
       - name: Run tests
         run: zig build test
-      - name: Build project
-        run: zig build
+      - name: Build Python extensions
+        run: zig build python
       - name: Build package distributions
         run: uv build --wheel
         working-directory: python
